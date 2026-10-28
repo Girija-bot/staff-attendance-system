@@ -1,5 +1,6 @@
-
 import os
+import sqlite3
+from pathlib import Path
 from datetime import date, datetime, time, timedelta
 from io import BytesIO
 
@@ -38,6 +39,44 @@ engine = create_engine(
 )
 
 Session = sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def create_sqlite_backup():
+    """Create a timestamped backup before destructive database changes."""
+
+    if engine.dialect.name != "sqlite":
+        raise RuntimeError(
+            "Automatic backup is configured for SQLite only. "
+            "Back up your hosted database through its provider first."
+        )
+
+    database_path = engine.url.database
+
+    if not database_path or database_path == ":memory:":
+        raise RuntimeError(
+            "Could not identify a file-based SQLite database."
+        )
+
+    database_path = Path(database_path)
+
+    if not database_path.is_absolute():
+        database_path = Path.cwd() / database_path
+
+    if not database_path.exists():
+        raise FileNotFoundError(
+            f"Database file not found: {database_path}"
+        )
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = database_path.with_name(
+        f"attendance_backup_before_delete_{timestamp}.db"
+    )
+
+    with sqlite3.connect(str(database_path)) as source:
+        with sqlite3.connect(str(backup_path)) as destination:
+            source.backup(destination)
+
+    return backup_path
 
 
 # --------------------------------------------------
@@ -80,12 +119,9 @@ class Attendance(Base):
     )
 
 
-# Create tables that do not exist yet.
 Base.metadata.create_all(engine)
 
-
-# Migrate an existing database without deleting its records.
-# Older versions of this app do not have the partita_iva column.
+# Migrate an existing database without deleting records.
 staff_columns = {
     column["name"] for column in inspect(engine).get_columns("staff")
 }
@@ -104,7 +140,6 @@ if "partita_iva" not in staff_columns:
 TRANSLATIONS = {
     "English": {
         "nav": "Navigation",
-        "language": "Language / Lingua",
         "dashboard": "Dashboard",
         "record": "Record attendance",
         "staff": "Staff management",
@@ -187,7 +222,6 @@ TRANSLATIONS = {
 
     "Italiano": {
         "nav": "Navigazione",
-        "language": "Lingua / Language",
         "dashboard": "Riepilogo",
         "record": "Registra presenze",
         "staff": "Gestione del personale",
@@ -272,6 +306,10 @@ TRANSLATIONS = {
 }
 
 
+# --------------------------------------------------
+# CATEGORIES AND STATUSES
+# --------------------------------------------------
+
 CATEGORIES = [
     "Officially registered",
     "Not officially registered",
@@ -286,6 +324,7 @@ CATEGORY_IT = {
 
 STATUSES = [
     "Present",
+    "Assente",
     "Absent",
     "Leave",
     "Called in - attended",
@@ -294,10 +333,19 @@ STATUSES = [
 
 STATUS_IT = {
     "Present": "Presente",
+    "Assente": "Assente",
     "Absent": "Assente",
     "Leave": "Permesso / ferie",
     "Called in - attended": "Chiamato/a - presente",
     "Called in - did not attend": "Chiamato/a - non presente",
+}
+
+# These statuses count as zero hours and do not need start/end times.
+ZERO_HOUR_STATUSES = {
+    "Assente",
+    "Absent",
+    "Leave",
+    "Called in - did not attend",
 }
 
 
@@ -307,8 +355,9 @@ STATUS_IT = {
 
 with st.sidebar:
     language = st.selectbox(
-        "Language / Lingua",
-        ["English", "Italiano"],
+        "Lingua / Language",
+        ["Italiano", "English"],
+        index=0,
         key="app_language"
     )
 
@@ -322,7 +371,15 @@ with st.sidebar:
 
     def status_label(status):
         if language == "Italiano":
-            return STATUS_IT.get(status, status)
+            if status is None or pd.isna(status):
+                return status
+
+            normalized_status = str(status).strip().casefold()
+
+            for english_status, italian_status in STATUS_IT.items():
+                if english_status.casefold() == normalized_status:
+                    return italian_status
+
         return status
 
     st.header(tr("nav"))
@@ -369,6 +426,11 @@ def get_attendance(staff_id, work_date):
 def save_attendance(
     staff_id, work_date, status, start_time, end_time, notes
 ):
+    # Do not save working hours for statuses that count as zero hours.
+    if status in ZERO_HOUR_STATUSES:
+        start_time = None
+        end_time = None
+
     with Session() as session:
         item = session.query(Attendance).filter_by(
             staff_id=staff_id,
@@ -427,18 +489,48 @@ def attendance_frame(start_date, end_date, category=None):
 
     df["work_date"] = pd.to_datetime(df["work_date"]).dt.date
 
-    df["start_time"] = df["start_time"].apply(
-        lambda value: value.strftime("%H:%M") if value else ""
-    )
+    def format_time(value):
+        if value is None or pd.isna(value):
+            return ""
 
-    df["end_time"] = df["end_time"].apply(
-        lambda value: value.strftime("%H:%M") if value else ""
-    )
+        if hasattr(value, "strftime"):
+            return value.strftime("%H:%M")
+
+        value_text = str(value)
+
+        try:
+            return datetime.strptime(
+                value_text[:8], "%H:%M:%S"
+            ).strftime("%H:%M")
+        except ValueError:
+            try:
+                return datetime.strptime(
+                    value_text[:5], "%H:%M"
+                ).strftime("%H:%M")
+            except ValueError:
+                return value_text
+
+    df["start_time"] = df["start_time"].apply(format_time)
+    df["end_time"] = df["end_time"].apply(format_time)
 
     def calculate_hours(row):
+        status_value = (
+            str(row["status"]).strip()
+            if pd.notna(row["status"])
+            else ""
+        )
+
+        zero_hour_lookup = {
+            value.casefold() for value in ZERO_HOUR_STATUSES
+        }
+
+        if status_value.casefold() in zero_hour_lookup:
+            return 0.0
+
         try:
             start = datetime.strptime(row["start_time"], "%H:%M")
             end = datetime.strptime(row["end_time"], "%H:%M")
+
             duration = (end - start).total_seconds() / 3600
 
             if duration < 0:
@@ -450,8 +542,13 @@ def attendance_frame(start_date, end_date, category=None):
             return 0.0
 
     df["hours"] = df.apply(calculate_hours, axis=1)
+
     return df
 
+
+# --------------------------------------------------
+# DISPLAY DATAFRAME — FIXED TRANSLATIONS
+# --------------------------------------------------
 
 def display_dataframe(df):
     result = df.copy()
@@ -459,8 +556,65 @@ def display_dataframe(df):
     if result.empty:
         return result
 
-    result["category"] = result["category"].apply(category_label)
-    result["status"] = result["status"].apply(status_label)
+    # Remove extra spaces from text values before translating.
+    def normalize_value(value):
+        if pd.isna(value):
+            return value
+        return str(value).strip()
+
+    if "category" in result.columns:
+        result["category"] = result["category"].apply(normalize_value)
+
+    if "status" in result.columns:
+        result["status"] = result["status"].apply(normalize_value)
+
+    # Translate common note values for display/export only.
+    # Keep original notes unchanged in the database.
+    if language == "Italiano" and "notes" in result.columns:
+        note_translations = {
+            "absent": "Assente",
+            "assente": "Assente",
+            "present": "Presente",
+            "leave": "Permesso / ferie",
+        }
+
+        def translate_note(value):
+            if not isinstance(value, str):
+                return value
+            return note_translations.get(value.strip().casefold(), value)
+
+        result["notes"] = result["notes"].apply(translate_note)
+
+    # Translate categories and statuses when Italian is selected.
+    if language == "Italiano":
+
+        category_lookup = {
+            key.strip().casefold(): value
+            for key, value in CATEGORY_IT.items()
+        }
+
+        status_lookup = {
+            key.strip().casefold(): value
+            for key, value in STATUS_IT.items()
+        }
+
+        if "category" in result.columns:
+            result["category"] = result["category"].apply(
+                lambda value: (
+                    category_lookup.get(value.casefold(), value)
+                    if isinstance(value, str)
+                    else value
+                )
+            )
+
+        if "status" in result.columns:
+            result["status"] = result["status"].apply(
+                lambda value: (
+                    status_lookup.get(value.casefold(), value)
+                    if isinstance(value, str)
+                    else value
+                )
+            )
 
     result = result.rename(columns={
         "work_date": tr("work_date"),
@@ -529,14 +683,16 @@ if page == tr("dashboard"):
     st.markdown(f"### {tr('by_category')}")
 
     for category in CATEGORIES:
-        count = sum(1 for person in people if person.category == category)
+        count = sum(
+            1 for person in people if person.category == category
+        )
         st.write(f"**{category_label(category)}:** {count}")
 
     if not today_df.empty:
         st.markdown(f"### {tr('today_records')}")
         st.dataframe(
             display_dataframe(today_df),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
     else:
@@ -590,6 +746,107 @@ elif page == tr("staff"):
                     st.success(f"{tr('added')} {name.strip()}.")
                     st.rerun()
 
+    # --------------------------------------------------
+    # DANGER ZONE: PERMANENT DELETION
+    # --------------------------------------------------
+
+    st.divider()
+
+    if language == "Italiano":
+        st.subheader("Zona pericolosa — Eliminazione definitiva")
+
+        st.warning(
+            "Questa operazione eliminerà definitivamente TUTTO il personale "
+            "e TUTTE le relative registrazioni delle presenze. "
+            "Prima dell'eliminazione verrà creata una copia di sicurezza "
+            "del database SQLite. L'operazione non può essere annullata "
+            "dall'app."
+        )
+
+        confirm_label = (
+            "Scrivi ELIMINA TUTTO per confermare l'eliminazione definitiva"
+        )
+
+        delete_button_label = (
+            "Elimina DEFINITIVAMENTE tutto il personale e tutte le presenze"
+        )
+
+        confirm_word = "ELIMINA TUTTO"
+
+    else:
+        st.subheader("Danger zone — Permanent deletion")
+
+        st.warning(
+            "This permanently deletes ALL staff members and ALL their "
+            "attendance records. A local SQLite backup will be created first. "
+            "This action cannot be undone from the app."
+        )
+
+        confirm_label = "Type DELETE ALL to confirm permanent deletion"
+
+        delete_button_label = (
+            "Permanently delete ALL staff and attendance"
+        )
+
+        confirm_word = "DELETE ALL"
+
+    confirm_delete_text = st.text_input(
+        confirm_label,
+        key="confirm_delete_all_staff"
+    )
+
+    if st.button(
+        delete_button_label,
+        type="primary",
+        disabled=(confirm_delete_text != confirm_word),
+        key="delete_all_staff_button"
+    ):
+        try:
+            # Do not delete anything unless the backup succeeds first.
+            backup_path = create_sqlite_backup()
+
+            with Session() as session:
+                # Delete attendance records before deleting staff.
+                session.query(Attendance).delete(
+                    synchronize_session=False
+                )
+                session.query(Staff).delete(
+                    synchronize_session=False
+                )
+                session.commit()
+
+            if language == "Italiano":
+                st.success(
+                    "Tutto il personale e tutte le presenze sono stati "
+                    "eliminati. Copia di sicurezza salvata in: "
+                    f"{backup_path}"
+                )
+            else:
+                st.success(
+                    "All staff and attendance records were deleted. "
+                    f"Backup saved at: {backup_path}"
+                )
+
+            st.rerun()
+
+        except Exception as exc:
+            if language == "Italiano":
+                st.error(
+                    "Si è verificato un errore. Non ripetere subito "
+                    "l'operazione: controlla prima il database e la copia "
+                    f"di sicurezza. Dettagli: {exc}"
+                )
+            else:
+                st.error(
+                    "The operation reported an error. Do not retry immediately; "
+                    "check the database and backup first. Details: "
+                    f"{exc}"
+                )
+
+    # --------------------------------------------------
+    # STAFF LIST
+    # --------------------------------------------------
+
     people = all_staff(active_only=False)
 
     if people:
@@ -638,6 +895,7 @@ elif page == tr("staff"):
 
                 with st.expander(f"{tr('edit_vat')} — {person.name}"):
                     with st.form(f"vat_form_{person.id}"):
+
                         new_vat = st.text_input(
                             tr("vat"),
                             value=person.partita_iva or "",
@@ -652,7 +910,9 @@ elif page == tr("staff"):
                             with Session() as session:
                                 obj = session.get(Staff, person.id)
                                 if obj:
-                                    obj.partita_iva = new_vat.strip() or None
+                                    obj.partita_iva = (
+                                        new_vat.strip() or None
+                                    )
                                     session.commit()
 
                             st.success(tr("vat_saved"))
@@ -705,6 +965,17 @@ elif page == tr("record"):
         else:
             default_status = "Present"
 
+        # Handle older database values with extra spaces/capitalization.
+        normalized_default = str(default_status).strip().casefold()
+
+        normalized_statuses = {
+            item.casefold(): item for item in STATUSES
+        }
+
+        default_status = normalized_statuses.get(
+            normalized_default, "Present"
+        )
+
         status = st.selectbox(
             tr("status"),
             STATUSES,
@@ -712,17 +983,46 @@ elif page == tr("record"):
             format_func=status_label
         )
 
-        col1, col2 = st.columns(2)
+        if status in ZERO_HOUR_STATUSES:
+            start_time = None
+            end_time = None
 
-        default_start = (
-            old.start_time if old and old.start_time else time(9, 0)
-        )
-        default_end = (
-            old.end_time if old and old.end_time else time(17, 0)
-        )
+            if language == "Italiano":
+                st.info(
+                    "Per questo stato non è necessario inserire "
+                    "l'ora di inizio o di fine. Le ore registrate saranno 0."
+                )
+            else:
+                st.info(
+                    "Start and end times are not required for this status. "
+                    "Recorded hours will be 0."
+                )
 
-        start_time = col1.time_input(tr("start"), value=default_start)
-        end_time = col2.time_input(tr("end"), value=default_end)
+        else:
+            col1, col2 = st.columns(2)
+
+            default_start = (
+                old.start_time
+                if old and old.start_time
+                else time(9, 0)
+            )
+            default_end = (
+                old.end_time
+                if old and old.end_time
+                else time(17, 0)
+            )
+
+            col1_time = col1.time_input(
+                tr("start"),
+                value=default_start
+            )
+            col2_time = col2.time_input(
+                tr("end"),
+                value=default_end
+            )
+
+            start_time = col1_time
+            end_time = col2_time
 
         notes = st.text_input(
             tr("notes"),
@@ -732,8 +1032,12 @@ elif page == tr("record"):
 
         if st.button(tr("save"), type="primary"):
             save_attendance(
-                chosen.id, work_date, status,
-                start_time, end_time, notes
+                chosen.id,
+                work_date,
+                status,
+                start_time,
+                end_time,
+                notes
             )
 
             st.success(
@@ -791,31 +1095,48 @@ elif page == tr("weekly"):
     else:
         total_entries = len(df)
 
+        # Normalize statuses for counting without changing database values.
+        normalized_statuses = df["status"].fillna("").astype(str).str.strip()
+
         attended_count = int(
-            df["status"].isin([
-                "Present", "Called in - attended"
+            normalized_statuses.str.casefold().isin([
+                "present",
+                "called in - attended"
             ]).sum()
         )
 
         absent_count = int(
-            df["status"].isin([
-                "Absent", "Called in - did not attend"
+            normalized_statuses.str.casefold().isin([
+                "assente",
+                "absent",
+                "called in - did not attend"
             ]).sum()
         )
 
         total_hours = float(df["hours"].sum())
 
         col1, col2, col3, col4 = st.columns(4)
+
         col1.metric(tr("entries"), total_entries)
         col2.metric(tr("attended"), attended_count)
         col3.metric(tr("absent"), absent_count)
         col4.metric(tr("hours"), f"{total_hours:.2f}")
 
+        # --------------------------------------------------
+        # SUMMARY BY CATEGORY AND STATUS
+        # --------------------------------------------------
+
         st.markdown(f"### {tr('totals')}")
 
         summary_df = df.copy()
-        summary_df["category"] = summary_df["category"].apply(category_label)
-        summary_df["status"] = summary_df["status"].apply(status_label)
+
+        summary_df["category"] = summary_df["category"].apply(
+            category_label
+        )
+
+        summary_df["status"] = summary_df["status"].apply(
+            status_label
+        )
 
         summary = (
             summary_df.groupby(["category", "status"])
@@ -827,19 +1148,25 @@ elif page == tr("weekly"):
 
         st.dataframe(
             summary.reset_index(),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
+        # --------------------------------------------------
+        # DETAILED WEEKLY REPORT
+        # --------------------------------------------------
+
         st.markdown(f"### {tr('detail')}")
+
         report_df = display_dataframe(df)
 
         st.dataframe(
             report_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
+        # CSV export uses the translated report.
         csv_data = report_df.to_csv(index=False).encode("utf-8-sig")
 
         filename_prefix = (
