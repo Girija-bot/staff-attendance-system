@@ -1,3 +1,4 @@
+
 import os
 import sqlite3
 from pathlib import Path
@@ -42,20 +43,17 @@ Session = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def create_sqlite_backup():
-    """Create a timestamped backup before destructive database changes."""
-
+    """Create a timestamped backup before deleting records."""
     if engine.dialect.name != "sqlite":
         raise RuntimeError(
             "Automatic backup is configured for SQLite only. "
-            "Back up your hosted database through its provider first."
+            "Back up the hosted database through its provider first."
         )
 
     database_path = engine.url.database
 
     if not database_path or database_path == ":memory:":
-        raise RuntimeError(
-            "Could not identify a file-based SQLite database."
-        )
+        raise RuntimeError("Could not identify a file-based SQLite database.")
 
     database_path = Path(database_path)
 
@@ -93,10 +91,23 @@ class Staff(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     category: Mapped[str] = mapped_column(String(50), nullable=False)
+
     partita_iva: Mapped[str | None] = mapped_column(
         String(30), nullable=True
     )
-    active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    email: Mapped[str | None] = mapped_column(
+        String(254), nullable=True
+    )
+    codice_fiscale: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+    telefono: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )
+
+    active: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False
+    )
 
 
 class Attendance(Base):
@@ -110,8 +121,12 @@ class Attendance(Base):
     status: Mapped[str] = mapped_column(
         String(40), nullable=False, default="Present"
     )
-    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
-    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    start_time: Mapped[time | None] = mapped_column(
+        Time, nullable=True
+    )
+    end_time: Mapped[time | None] = mapped_column(
+        Time, nullable=True
+    )
     notes: Mapped[str] = mapped_column(String(500), default="")
 
     __table_args__ = (
@@ -119,18 +134,36 @@ class Attendance(Base):
     )
 
 
+# Create tables if they do not exist.
 Base.metadata.create_all(engine)
 
-# Migrate an existing database without deleting records.
+
+# --------------------------------------------------
+# SAFE DATABASE MIGRATIONS
+# Existing staff and attendance records are preserved.
+# --------------------------------------------------
+
 staff_columns = {
-    column["name"] for column in inspect(engine).get_columns("staff")
+    column["name"]
+    for column in inspect(engine).get_columns("staff")
 }
 
-if "partita_iva" not in staff_columns:
-    with engine.begin() as connection:
-        connection.execute(
-            text("ALTER TABLE staff ADD COLUMN partita_iva VARCHAR(30)")
-        )
+new_columns = {
+    "partita_iva": "VARCHAR(30)",
+    "email": "VARCHAR(254)",
+    "codice_fiscale": "VARCHAR(16)",
+    "telefono": "VARCHAR(30)",
+}
+
+for column_name, column_type in new_columns.items():
+    if column_name not in staff_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"ALTER TABLE staff ADD COLUMN "
+                    f"{column_name} {column_type}"
+                )
+            )
 
 
 # --------------------------------------------------
@@ -162,10 +195,11 @@ TRANSLATIONS = {
         "name": "Staff name",
         "category": "Category",
         "vat": "Partita IVA / VAT number (optional)",
-        "vat_help": "Enter the VAT number if applicable. Leave blank if not applicable.",
-        "save_vat": "Save Partita IVA",
-        "edit_vat": "Edit Partita IVA",
-        "no_vat": "Not provided",
+        "email": "Email address (optional)",
+        "tax_code": "Codice fiscale (optional)",
+        "phone": "Phone number (optional)",
+        "contact_details": "Contact details",
+        "vat_help": "Enter the VAT number if applicable.",
         "add": "Add staff member",
         "enter_name": "Please enter a staff name.",
         "added": "Added",
@@ -178,7 +212,8 @@ TRANSLATIONS = {
             "Deactivating a staff member hides them from new attendance "
             "entries but keeps historical records."
         ),
-        "vat_saved": "Partita IVA updated successfully.",
+        "save_details": "Save staff details",
+        "details_saved": "Staff details updated successfully.",
         "record_title": "Record daily attendance",
         "attendance_date": "Attendance date",
         "person": "Staff member",
@@ -214,10 +249,9 @@ TRANSLATIONS = {
             "not deducted. These figures are not a payroll calculation."
         ),
         "empty_category": (
-            "No active staff in this category yet. Add staff in Staff management."
+            "No active staff in this category yet. "
+            "Add staff in Staff management."
         ),
-        "called_absent_default": "Called in - did not attend",
-        "present_default": "Present",
     },
 
     "Italiano": {
@@ -244,10 +278,11 @@ TRANSLATIONS = {
         "name": "Nome del dipendente",
         "category": "Categoria",
         "vat": "Partita IVA (facoltativa)",
-        "vat_help": "Inserisci la Partita IVA se applicabile. Lascia vuoto se non applicabile.",
-        "save_vat": "Salva Partita IVA",
-        "edit_vat": "Modifica Partita IVA",
-        "no_vat": "Non inserita",
+        "email": "Indirizzo e-mail (facoltativo)",
+        "tax_code": "Codice fiscale (facoltativo)",
+        "phone": "Numero di telefono (facoltativo)",
+        "contact_details": "Dati di contatto",
+        "vat_help": "Inserisci la Partita IVA se applicabile.",
         "add": "Aggiungi persona",
         "enter_name": "Inserisci il nome della persona.",
         "added": "Aggiunto/a",
@@ -260,7 +295,8 @@ TRANSLATIONS = {
             "Disattivando una persona, questa non apparirà nelle nuove "
             "registrazioni, ma lo storico verrà conservato."
         ),
-        "vat_saved": "Partita IVA aggiornata correttamente.",
+        "save_details": "Salva i dati della persona",
+        "details_saved": "Dati del personale aggiornati correttamente.",
         "record_title": "Registra le presenze giornaliere",
         "attendance_date": "Data della presenza",
         "person": "Persona",
@@ -300,8 +336,6 @@ TRANSLATIONS = {
             "Non ci sono ancora persone attive in questa categoria. "
             "Aggiungile in Gestione del personale."
         ),
-        "called_absent_default": "Chiamato/a - non presente",
-        "present_default": "Presente",
     }
 }
 
@@ -318,7 +352,7 @@ CATEGORIES = [
 
 CATEGORY_IT = {
     "Officially registered": "Personale regolarmente assunto",
-    "Not officially registered": "Personale non regolarmente registrato",
+    "Not officially registered": "Personale a prestazione occasionale",
     "On-call staff": "Personale a chiamata",
 }
 
@@ -340,7 +374,6 @@ STATUS_IT = {
     "Called in - did not attend": "Chiamato/a - non presente",
 }
 
-# These statuses count as zero hours and do not need start/end times.
 ZERO_HOUR_STATUSES = {
     "Assente",
     "Absent",
@@ -374,11 +407,11 @@ with st.sidebar:
             if status is None or pd.isna(status):
                 return status
 
-            normalized_status = str(status).strip().casefold()
+            normalized = str(status).strip().casefold()
 
-            for english_status, italian_status in STATUS_IT.items():
-                if english_status.casefold() == normalized_status:
-                    return italian_status
+            for original, translated in STATUS_IT.items():
+                if original.casefold() == normalized:
+                    return translated
 
         return status
 
@@ -426,7 +459,6 @@ def get_attendance(staff_id, work_date):
 def save_attendance(
     staff_id, work_date, status, start_time, end_time, notes
 ):
-    # Do not save working hours for statuses that count as zero hours.
     if status in ZERO_HOUR_STATUSES:
         start_time = None
         end_time = None
@@ -547,7 +579,7 @@ def attendance_frame(start_date, end_date, category=None):
 
 
 # --------------------------------------------------
-# DISPLAY DATAFRAME — FIXED TRANSLATIONS
+# DISPLAY DATAFRAME
 # --------------------------------------------------
 
 def display_dataframe(df):
@@ -556,38 +588,17 @@ def display_dataframe(df):
     if result.empty:
         return result
 
-    # Remove extra spaces from text values before translating.
-    def normalize_value(value):
-        if pd.isna(value):
-            return value
-        return str(value).strip()
+    for column in ["category", "status"]:
+        if column in result.columns:
+            result[column] = result[column].apply(
+                lambda value: (
+                    str(value).strip()
+                    if pd.notna(value)
+                    else value
+                )
+            )
 
-    if "category" in result.columns:
-        result["category"] = result["category"].apply(normalize_value)
-
-    if "status" in result.columns:
-        result["status"] = result["status"].apply(normalize_value)
-
-    # Translate common note values for display/export only.
-    # Keep original notes unchanged in the database.
-    if language == "Italiano" and "notes" in result.columns:
-        note_translations = {
-            "absent": "Assente",
-            "assente": "Assente",
-            "present": "Presente",
-            "leave": "Permesso / ferie",
-        }
-
-        def translate_note(value):
-            if not isinstance(value, str):
-                return value
-            return note_translations.get(value.strip().casefold(), value)
-
-        result["notes"] = result["notes"].apply(translate_note)
-
-    # Translate categories and statuses when Italian is selected.
     if language == "Italiano":
-
         category_lookup = {
             key.strip().casefold(): value
             for key, value in CATEGORY_IT.items()
@@ -611,6 +622,24 @@ def display_dataframe(df):
             result["status"] = result["status"].apply(
                 lambda value: (
                     status_lookup.get(value.casefold(), value)
+                    if isinstance(value, str)
+                    else value
+                )
+            )
+
+        if "notes" in result.columns:
+            note_translations = {
+                "absent": "Assente",
+                "assente": "Assente",
+                "present": "Presente",
+                "leave": "Permesso / ferie",
+            }
+
+            result["notes"] = result["notes"].apply(
+                lambda value: (
+                    note_translations.get(
+                        value.strip().casefold(), value
+                    )
                     if isinstance(value, str)
                     else value
                 )
@@ -674,8 +703,9 @@ if page == tr("dashboard"):
     col3.metric(
         tr("present_today"),
         0 if today_df.empty else int(
-            today_df["status"].isin([
-                "Present", "Called in - attended"
+            today_df["status"].fillna("").astype(str).str.strip()
+            .str.casefold().isin([
+                "present", "called in - attended"
             ]).sum()
         )
     )
@@ -700,13 +730,14 @@ if page == tr("dashboard"):
 
 
 # --------------------------------------------------
-# STAFF MANAGEMENT + PARTITA IVA
+# STAFF MANAGEMENT
 # --------------------------------------------------
 
 elif page == tr("staff"):
 
     st.subheader(tr("staff_management"))
 
+    # ADD STAFF
     with st.expander(tr("add_staff"), expanded=True):
         with st.form("add_staff_form", clear_on_submit=True):
 
@@ -718,10 +749,27 @@ elif page == tr("staff"):
                 format_func=category_label
             )
 
+            st.markdown(f"**{tr('contact_details')}**")
+
             partita_iva = st.text_input(
                 tr("vat"),
                 max_chars=30,
                 help=tr("vat_help")
+            )
+
+            email = st.text_input(
+                tr("email"),
+                max_chars=254
+            )
+
+            codice_fiscale = st.text_input(
+                tr("tax_code"),
+                max_chars=16
+            )
+
+            telefono = st.text_input(
+                tr("phone"),
+                max_chars=30
             )
 
             submitted = st.form_submit_button(
@@ -738,7 +786,13 @@ elif page == tr("staff"):
                             Staff(
                                 name=name.strip(),
                                 category=category,
-                                partita_iva=partita_iva.strip() or None
+                                partita_iva=partita_iva.strip() or None,
+                                email=email.strip() or None,
+                                codice_fiscale=(
+                                    codice_fiscale.strip().upper() or None
+                                ),
+                                telefono=telefono.strip() or None,
+                                active=1
                             )
                         )
                         session.commit()
@@ -766,11 +820,9 @@ elif page == tr("staff"):
         confirm_label = (
             "Scrivi ELIMINA TUTTO per confermare l'eliminazione definitiva"
         )
-
         delete_button_label = (
             "Elimina DEFINITIVAMENTE tutto il personale e tutte le presenze"
         )
-
         confirm_word = "ELIMINA TUTTO"
 
     else:
@@ -783,11 +835,9 @@ elif page == tr("staff"):
         )
 
         confirm_label = "Type DELETE ALL to confirm permanent deletion"
-
         delete_button_label = (
             "Permanently delete ALL staff and attendance"
         )
-
         confirm_word = "DELETE ALL"
 
     confirm_delete_text = st.text_input(
@@ -802,11 +852,9 @@ elif page == tr("staff"):
         key="delete_all_staff_button"
     ):
         try:
-            # Do not delete anything unless the backup succeeds first.
             backup_path = create_sqlite_backup()
 
             with Session() as session:
-                # Delete attendance records before deleting staff.
                 session.query(Attendance).delete(
                     synchronize_session=False
                 )
@@ -815,36 +863,25 @@ elif page == tr("staff"):
                 )
                 session.commit()
 
-            if language == "Italiano":
-                st.success(
+            st.success(
+                (
                     "Tutto il personale e tutte le presenze sono stati "
                     "eliminati. Copia di sicurezza salvata in: "
-                    f"{backup_path}"
-                )
-            else:
-                st.success(
-                    "All staff and attendance records were deleted. "
-                    f"Backup saved at: {backup_path}"
-                )
-
+                    if language == "Italiano"
+                    else "All staff and attendance records were deleted. "
+                    "Backup saved at: "
+                ) + str(backup_path)
+            )
             st.rerun()
 
         except Exception as exc:
-            if language == "Italiano":
-                st.error(
-                    "Si è verificato un errore. Non ripetere subito "
-                    "l'operazione: controlla prima il database e la copia "
-                    f"di sicurezza. Dettagli: {exc}"
-                )
-            else:
-                st.error(
-                    "The operation reported an error. Do not retry immediately; "
-                    "check the database and backup first. Details: "
-                    f"{exc}"
-                )
+            st.error(
+                "Errore durante l'operazione / Error during operation: "
+                f"{exc}"
+            )
 
     # --------------------------------------------------
-    # STAFF LIST
+    # STAFF LIST AND EDITABLE CONTACT DETAILS
     # --------------------------------------------------
 
     people = all_staff(active_only=False)
@@ -861,7 +898,18 @@ elif page == tr("staff"):
                 col2.write(category_label(person.category))
                 col3.write(
                     f"**{tr('vat')}:** "
-                    f"{person.partita_iva or tr('no_vat')}"
+                    f"{person.partita_iva or '—'}"
+                )
+
+                st.write(
+                    f"**{tr('email')}:** {person.email or '—'}"
+                )
+                st.write(
+                    f"**{tr('tax_code')}:** "
+                    f"{person.codice_fiscale or '—'}"
+                )
+                st.write(
+                    f"**{tr('phone')}:** {person.telefono or '—'}"
                 )
 
                 col4, col5 = st.columns([1, 1])
@@ -893,30 +941,84 @@ elif page == tr("staff"):
                                 session.commit()
                         st.rerun()
 
-                with st.expander(f"{tr('edit_vat')} — {person.name}"):
-                    with st.form(f"vat_form_{person.id}"):
+                with st.expander(
+                    f"{tr('contact_details')} — {person.name}"
+                ):
+                    with st.form(f"staff_details_form_{person.id}"):
+
+                        new_name = st.text_input(
+                            tr("name"),
+                            value=person.name,
+                            key=f"name_{person.id}"
+                        )
+
+                        new_category = st.selectbox(
+                            tr("category"),
+                            CATEGORIES,
+                            index=CATEGORIES.index(person.category),
+                            format_func=category_label,
+                            key=f"category_{person.id}"
+                        )
 
                         new_vat = st.text_input(
                             tr("vat"),
                             value=person.partita_iva or "",
                             max_chars=30,
-                            key=f"vat_input_{person.id}",
-                            help=tr("vat_help")
+                            key=f"vat_{person.id}"
                         )
 
-                        save_vat = st.form_submit_button(tr("save_vat"))
+                        new_email = st.text_input(
+                            tr("email"),
+                            value=person.email or "",
+                            max_chars=254,
+                            key=f"email_{person.id}"
+                        )
 
-                        if save_vat:
-                            with Session() as session:
-                                obj = session.get(Staff, person.id)
-                                if obj:
-                                    obj.partita_iva = (
-                                        new_vat.strip() or None
-                                    )
-                                    session.commit()
+                        new_tax_code = st.text_input(
+                            tr("tax_code"),
+                            value=person.codice_fiscale or "",
+                            max_chars=16,
+                            key=f"tax_code_{person.id}"
+                        )
 
-                            st.success(tr("vat_saved"))
-                            st.rerun()
+                        new_phone = st.text_input(
+                            tr("phone"),
+                            value=person.telefono or "",
+                            max_chars=30,
+                            key=f"phone_{person.id}"
+                        )
+
+                        save_details = st.form_submit_button(
+                            tr("save_details")
+                        )
+
+                        if save_details:
+                            if not new_name.strip():
+                                st.error(tr("enter_name"))
+                            else:
+                                with Session() as session:
+                                    obj = session.get(Staff, person.id)
+
+                                    if obj:
+                                        obj.name = new_name.strip()
+                                        obj.category = new_category
+                                        obj.partita_iva = (
+                                            new_vat.strip() or None
+                                        )
+                                        obj.email = (
+                                            new_email.strip() or None
+                                        )
+                                        obj.codice_fiscale = (
+                                            new_tax_code.strip().upper()
+                                            or None
+                                        )
+                                        obj.telefono = (
+                                            new_phone.strip() or None
+                                        )
+                                        session.commit()
+
+                                st.success(tr("details_saved"))
+                                st.rerun()
 
         st.caption(tr("deactivate_note"))
 
@@ -965,9 +1067,7 @@ elif page == tr("record"):
         else:
             default_status = "Present"
 
-        # Handle older database values with extra spaces/capitalization.
         normalized_default = str(default_status).strip().casefold()
-
         normalized_statuses = {
             item.casefold(): item for item in STATUSES
         }
@@ -1002,27 +1102,20 @@ elif page == tr("record"):
             col1, col2 = st.columns(2)
 
             default_start = (
-                old.start_time
-                if old and old.start_time
-                else time(9, 0)
+                old.start_time if old and old.start_time else time(9, 0)
             )
             default_end = (
-                old.end_time
-                if old and old.end_time
-                else time(17, 0)
+                old.end_time if old and old.end_time else time(17, 0)
             )
 
-            col1_time = col1.time_input(
+            start_time = col1.time_input(
                 tr("start"),
                 value=default_start
             )
-            col2_time = col2.time_input(
+            end_time = col2.time_input(
                 tr("end"),
                 value=default_end
             )
-
-            start_time = col1_time
-            end_time = col2_time
 
         notes = st.text_input(
             tr("notes"),
@@ -1095,18 +1188,18 @@ elif page == tr("weekly"):
     else:
         total_entries = len(df)
 
-        # Normalize statuses for counting without changing database values.
-        normalized_statuses = df["status"].fillna("").astype(str).str.strip()
+        normalized_statuses = (
+            df["status"].fillna("").astype(str).str.strip().str.casefold()
+        )
 
         attended_count = int(
-            normalized_statuses.str.casefold().isin([
-                "present",
-                "called in - attended"
+            normalized_statuses.isin([
+                "present", "called in - attended"
             ]).sum()
         )
 
         absent_count = int(
-            normalized_statuses.str.casefold().isin([
+            normalized_statuses.isin([
                 "assente",
                 "absent",
                 "called in - did not attend"
@@ -1122,21 +1215,14 @@ elif page == tr("weekly"):
         col3.metric(tr("absent"), absent_count)
         col4.metric(tr("hours"), f"{total_hours:.2f}")
 
-        # --------------------------------------------------
         # SUMMARY BY CATEGORY AND STATUS
-        # --------------------------------------------------
-
         st.markdown(f"### {tr('totals')}")
 
         summary_df = df.copy()
-
         summary_df["category"] = summary_df["category"].apply(
             category_label
         )
-
-        summary_df["status"] = summary_df["status"].apply(
-            status_label
-        )
+        summary_df["status"] = summary_df["status"].apply(status_label)
 
         summary = (
             summary_df.groupby(["category", "status"])
@@ -1152,10 +1238,7 @@ elif page == tr("weekly"):
             hide_index=True
         )
 
-        # --------------------------------------------------
         # DETAILED WEEKLY REPORT
-        # --------------------------------------------------
-
         st.markdown(f"### {tr('detail')}")
 
         report_df = display_dataframe(df)
@@ -1166,7 +1249,6 @@ elif page == tr("weekly"):
             hide_index=True
         )
 
-        # CSV export uses the translated report.
         csv_data = report_df.to_csv(index=False).encode("utf-8-sig")
 
         filename_prefix = (
