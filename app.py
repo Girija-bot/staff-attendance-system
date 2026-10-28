@@ -7,10 +7,11 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import (
     create_engine, text, Integer, String, Date, Time,
-    ForeignKey, UniqueConstraint
+    ForeignKey, UniqueConstraint, inspect
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-
+from sqlalchemy.orm import (
+    DeclarativeBase, Mapped, mapped_column, sessionmaker
+)
 
 # --------------------------------------------------
 # PAGE CONFIGURATION
@@ -22,7 +23,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Use the existing local database, or PostgreSQL if DATABASE_URL is configured.
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///attendance.db")
 
 connect_args = (
@@ -54,6 +54,9 @@ class Staff(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     category: Mapped[str] = mapped_column(String(50), nullable=False)
+    partita_iva: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )
     active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
@@ -73,19 +76,29 @@ class Attendance(Base):
     notes: Mapped[str] = mapped_column(String(500), default="")
 
     __table_args__ = (
-        UniqueConstraint(
-            "staff_id", "work_date", name="uq_staff_day"
-        ),
+        UniqueConstraint("staff_id", "work_date", name="uq_staff_day"),
     )
 
 
+# Create tables that do not exist yet.
 Base.metadata.create_all(engine)
 
 
+# Migrate an existing database without deleting its records.
+# Older versions of this app do not have the partita_iva column.
+staff_columns = {
+    column["name"] for column in inspect(engine).get_columns("staff")
+}
+
+if "partita_iva" not in staff_columns:
+    with engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE staff ADD COLUMN partita_iva VARCHAR(30)")
+        )
+
+
 # --------------------------------------------------
-# LANGUAGES
-# Database values remain in English so existing data
-# continues to work when changing the display language.
+# TRANSLATIONS
 # --------------------------------------------------
 
 TRANSLATIONS = {
@@ -113,6 +126,11 @@ TRANSLATIONS = {
         "add_staff": "➕ Add staff member",
         "name": "Staff name",
         "category": "Category",
+        "vat": "Partita IVA / VAT number (optional)",
+        "vat_help": "Enter the VAT number if applicable. Leave blank if not applicable.",
+        "save_vat": "Save Partita IVA",
+        "edit_vat": "Edit Partita IVA",
+        "no_vat": "Not provided",
         "add": "Add staff member",
         "enter_name": "Please enter a staff name.",
         "added": "Added",
@@ -125,6 +143,7 @@ TRANSLATIONS = {
             "Deactivating a staff member hides them from new attendance "
             "entries but keeps historical records."
         ),
+        "vat_saved": "Partita IVA updated successfully.",
         "record_title": "Record daily attendance",
         "attendance_date": "Attendance date",
         "person": "Staff member",
@@ -190,6 +209,11 @@ TRANSLATIONS = {
         "add_staff": "➕ Aggiungi una persona",
         "name": "Nome del dipendente",
         "category": "Categoria",
+        "vat": "Partita IVA (facoltativa)",
+        "vat_help": "Inserisci la Partita IVA se applicabile. Lascia vuoto se non applicabile.",
+        "save_vat": "Salva Partita IVA",
+        "edit_vat": "Modifica Partita IVA",
+        "no_vat": "Non inserita",
         "add": "Aggiungi persona",
         "enter_name": "Inserisci il nome della persona.",
         "added": "Aggiunto/a",
@@ -202,6 +226,7 @@ TRANSLATIONS = {
             "Disattivando una persona, questa non apparirà nelle nuove "
             "registrazioni, ma lo storico verrà conservato."
         ),
+        "vat_saved": "Partita IVA aggiornata correttamente.",
         "record_title": "Registra le presenze giornaliere",
         "attendance_date": "Data della presenza",
         "person": "Persona",
@@ -246,9 +271,6 @@ TRANSLATIONS = {
     }
 }
 
-
-# The database stores category/status values in English.
-# These dictionaries only translate what is shown on screen.
 
 CATEGORIES = [
     "Officially registered",
@@ -417,7 +439,6 @@ def attendance_frame(start_date, end_date, category=None):
         try:
             start = datetime.strptime(row["start_time"], "%H:%M")
             end = datetime.strptime(row["end_time"], "%H:%M")
-
             duration = (end - start).total_seconds() / 3600
 
             if duration < 0:
@@ -429,12 +450,10 @@ def attendance_frame(start_date, end_date, category=None):
             return 0.0
 
     df["hours"] = df.apply(calculate_hours, axis=1)
-
     return df
 
 
 def display_dataframe(df):
-    """Translate report labels without changing stored database values."""
     result = df.copy()
 
     if result.empty:
@@ -445,8 +464,9 @@ def display_dataframe(df):
 
     result = result.rename(columns={
         "work_date": tr("work_date"),
-        "name": tr("name") if "name" in TRANSLATIONS[language] else (
-            "Staff name" if language == "English" else "Nome del dipendente"
+        "name": (
+            "Staff name" if language == "English"
+            else "Nome del dipendente"
         ),
         "category": tr("category"),
         "status": tr("status"),
@@ -461,15 +481,10 @@ def display_dataframe(df):
 
 def make_excel(df):
     output = BytesIO()
-
     sheet_name = "Attendance" if language == "English" else "Presenze"
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(
-            writer,
-            index=False,
-            sheet_name=sheet_name
-        )
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
 
     output.seek(0)
     return output.getvalue()
@@ -490,32 +505,23 @@ st.caption(tr("subtitle"))
 if page == tr("dashboard"):
 
     today = date.today()
-
-    st.subheader(
-        f"{tr('today')} — {today.strftime('%d/%m/%Y')}"
-    )
+    st.subheader(f"{tr('today')} — {today.strftime('%d/%m/%Y')}")
 
     people = all_staff()
     today_df = attendance_frame(today, today)
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric(
-        tr("active_staff"),
-        len(people)
-    )
-
+    col1.metric(tr("active_staff"), len(people))
     col2.metric(
         tr("records_today"),
         0 if today_df.empty else len(today_df)
     )
-
     col3.metric(
         tr("present_today"),
         0 if today_df.empty else int(
             today_df["status"].isin([
-                "Present",
-                "Called in - attended"
+                "Present", "Called in - attended"
             ]).sum()
         )
     )
@@ -523,11 +529,7 @@ if page == tr("dashboard"):
     st.markdown(f"### {tr('by_category')}")
 
     for category in CATEGORIES:
-        count = sum(
-            1 for person in people
-            if person.category == category
-        )
-
+        count = sum(1 for person in people if person.category == category)
         st.write(f"**{category_label(category)}:** {count}")
 
     if not today_df.empty:
@@ -542,7 +544,7 @@ if page == tr("dashboard"):
 
 
 # --------------------------------------------------
-# STAFF MANAGEMENT
+# STAFF MANAGEMENT + PARTITA IVA
 # --------------------------------------------------
 
 elif page == tr("staff"):
@@ -550,7 +552,6 @@ elif page == tr("staff"):
     st.subheader(tr("staff_management"))
 
     with st.expander(tr("add_staff"), expanded=True):
-
         with st.form("add_staff_form", clear_on_submit=True):
 
             name = st.text_input(tr("name"))
@@ -561,6 +562,12 @@ elif page == tr("staff"):
                 format_func=category_label
             )
 
+            partita_iva = st.text_input(
+                tr("vat"),
+                max_chars=30,
+                help=tr("vat_help")
+            )
+
             submitted = st.form_submit_button(
                 tr("add"),
                 type="primary"
@@ -569,13 +576,13 @@ elif page == tr("staff"):
             if submitted:
                 if not name.strip():
                     st.error(tr("enter_name"))
-
                 else:
                     with Session() as session:
                         session.add(
                             Staff(
                                 name=name.strip(),
-                                category=category
+                                category=category,
+                                partita_iva=partita_iva.strip() or None
                             )
                         )
                         session.commit()
@@ -586,47 +593,70 @@ elif page == tr("staff"):
     people = all_staff(active_only=False)
 
     if people:
-
         st.markdown(f"### {tr('staff_list')}")
 
         for person in people:
-
             with st.container(border=True):
 
-                col1, col2, col3, col4 = st.columns([3, 3, 1, 1])
+                col1, col2, col3 = st.columns([2, 2, 2])
 
                 col1.write(f"**{person.name}**")
                 col2.write(category_label(person.category))
-
                 col3.write(
+                    f"**{tr('vat')}:** "
+                    f"{person.partita_iva or tr('no_vat')}"
+                )
+
+                col4, col5 = st.columns([1, 1])
+
+                col4.write(
                     tr("active") if person.active else tr("inactive")
                 )
 
                 if person.active:
-
-                    if col4.button(
+                    if col5.button(
                         tr("deactivate"),
                         key=f"deactivate_{person.id}"
                     ):
                         with Session() as session:
                             obj = session.get(Staff, person.id)
-                            obj.active = 0
-                            session.commit()
-
+                            if obj:
+                                obj.active = 0
+                                session.commit()
                         st.rerun()
-
                 else:
-
-                    if col4.button(
+                    if col5.button(
                         tr("reactivate"),
                         key=f"reactivate_{person.id}"
                     ):
                         with Session() as session:
                             obj = session.get(Staff, person.id)
-                            obj.active = 1
-                            session.commit()
-
+                            if obj:
+                                obj.active = 1
+                                session.commit()
                         st.rerun()
+
+                with st.expander(f"{tr('edit_vat')} — {person.name}"):
+                    with st.form(f"vat_form_{person.id}"):
+                        new_vat = st.text_input(
+                            tr("vat"),
+                            value=person.partita_iva or "",
+                            max_chars=30,
+                            key=f"vat_input_{person.id}",
+                            help=tr("vat_help")
+                        )
+
+                        save_vat = st.form_submit_button(tr("save_vat"))
+
+                        if save_vat:
+                            with Session() as session:
+                                obj = session.get(Staff, person.id)
+                                if obj:
+                                    obj.partita_iva = new_vat.strip() or None
+                                    session.commit()
+
+                            st.success(tr("vat_saved"))
+                            st.rerun()
 
         st.caption(tr("deactivate_note"))
 
@@ -657,11 +687,9 @@ elif page == tr("record"):
     ]
 
     if not people:
-
         st.info(tr("empty_category"))
 
     else:
-
         chosen = st.selectbox(
             tr("person"),
             people,
@@ -687,26 +715,14 @@ elif page == tr("record"):
         col1, col2 = st.columns(2)
 
         default_start = (
-            old.start_time
-            if old and old.start_time
-            else time(9, 0)
+            old.start_time if old and old.start_time else time(9, 0)
         )
-
         default_end = (
-            old.end_time
-            if old and old.end_time
-            else time(17, 0)
+            old.end_time if old and old.end_time else time(17, 0)
         )
 
-        start_time = col1.time_input(
-            tr("start"),
-            value=default_start
-        )
-
-        end_time = col2.time_input(
-            tr("end"),
-            value=default_end
-        )
+        start_time = col1.time_input(tr("start"), value=default_start)
+        end_time = col2.time_input(tr("end"), value=default_end)
 
         notes = st.text_input(
             tr("notes"),
@@ -715,14 +731,9 @@ elif page == tr("record"):
         )
 
         if st.button(tr("save"), type="primary"):
-
             save_attendance(
-                chosen.id,
-                work_date,
-                status,
-                start_time,
-                end_time,
-                notes
+                chosen.id, work_date, status,
+                start_time, end_time, notes
             )
 
             st.success(
@@ -747,10 +758,7 @@ elif page == tr("weekly"):
         format="DD/MM/YYYY"
     )
 
-    monday = selected_day - timedelta(
-        days=selected_day.weekday()
-    )
-
+    monday = selected_day - timedelta(days=selected_day.weekday())
     sunday = monday + timedelta(days=6)
 
     st.write(
@@ -765,8 +773,7 @@ elif page == tr("weekly"):
         tr("filter"),
         category_options,
         format_func=lambda item: (
-            tr("all")
-            if item == "All categories"
+            tr("all") if item == "All categories"
             else category_label(item)
         )
     )
@@ -779,52 +786,39 @@ elif page == tr("weekly"):
     )
 
     if df.empty:
-
         st.info(tr("no_week"))
 
     else:
-
         total_entries = len(df)
 
         attended_count = int(
             df["status"].isin([
-                "Present",
-                "Called in - attended"
+                "Present", "Called in - attended"
             ]).sum()
         )
 
         absent_count = int(
             df["status"].isin([
-                "Absent",
-                "Called in - did not attend"
+                "Absent", "Called in - did not attend"
             ]).sum()
         )
 
         total_hours = float(df["hours"].sum())
 
         col1, col2, col3, col4 = st.columns(4)
-
         col1.metric(tr("entries"), total_entries)
         col2.metric(tr("attended"), attended_count)
         col3.metric(tr("absent"), absent_count)
         col4.metric(tr("hours"), f"{total_hours:.2f}")
 
-        # Category and status totals
         st.markdown(f"### {tr('totals')}")
 
         summary_df = df.copy()
-
-        summary_df["category"] = summary_df["category"].apply(
-            category_label
-        )
-
-        summary_df["status"] = summary_df["status"].apply(
-            status_label
-        )
+        summary_df["category"] = summary_df["category"].apply(category_label)
+        summary_df["status"] = summary_df["status"].apply(status_label)
 
         summary = (
-            summary_df
-            .groupby(["category", "status"])
+            summary_df.groupby(["category", "status"])
             .size()
             .unstack(fill_value=0)
         )
@@ -837,9 +831,7 @@ elif page == tr("weekly"):
             hide_index=True
         )
 
-        # Detailed report
         st.markdown(f"### {tr('detail')}")
-
         report_df = display_dataframe(df)
 
         st.dataframe(
@@ -848,14 +840,10 @@ elif page == tr("weekly"):
             hide_index=True
         )
 
-        csv_data = report_df.to_csv(
-            index=False
-        ).encode("utf-8-sig")
+        csv_data = report_df.to_csv(index=False).encode("utf-8-sig")
 
         filename_prefix = (
-            "attendance"
-            if language == "English"
-            else "presenze"
+            "attendance" if language == "English" else "presenze"
         )
 
         col1, col2 = st.columns(2)
