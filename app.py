@@ -136,6 +136,15 @@ class Attendance(Base):
 
 # Create tables if they do not exist.
 Base.metadata.create_all(engine)
+try:
+    with engine.connect() as conn:
+        st.sidebar.success(
+            f"Database connected: {engine.dialect.name}"
+        )
+except Exception as e:
+    st.sidebar.error(
+        f"Database connection failed: {type(e).__name__}"
+    )
 
 
 # --------------------------------------------------
