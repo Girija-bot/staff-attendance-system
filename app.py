@@ -372,6 +372,7 @@ with st.sidebar:
         tr("record"),
         tr("staff"),
         tr("weekly"),
+        "Magazzino"
     ]
 
     page = st.radio(
@@ -468,11 +469,14 @@ def attendance_frame(start_date, end_date, category=None):
     df["work_date"] = pd.to_datetime(df["work_date"]).dt.date
 
     df["start_time"] = df["start_time"].apply(
-        lambda value: value.strftime("%H:%M") if value else ""
+        lambda value: (
+            value.strftime("%H:%M")
+            if hasattr(value, "strftime")
+            else str(value)[:5] if value else ""
     )
-
+    )
     df["end_time"] = df["end_time"].apply(
-        lambda value: value.strftime("%H:%M") if value else ""
+        lambda value: value.strftime("%H:%M") if hasattr(value, "strftime") else str(value)[:5] if value else ""
     )
 
     def calculate_hours(row):
@@ -536,6 +540,10 @@ def make_excel(df):
 
 st.title(tr("title"))
 st.caption(tr("subtitle"))
+if page == "Magazzino":
+    from inventory import render_inventory
+    render_inventory()
+    st.stop()
 
 
 # --------------------------------------------------
