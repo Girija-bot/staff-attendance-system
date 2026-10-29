@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 from pathlib import Path
@@ -72,7 +71,6 @@ def create_sqlite_backup():
         f"attendance_backup_before_delete_{timestamp}.db"
     )
 
-    # SQLite's backup API safely copies the database, including live databases.
     with sqlite3.connect(str(database_path)) as source:
         with sqlite3.connect(str(backup_path)) as destination:
             source.backup(destination)
@@ -94,9 +92,20 @@ class Staff(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     category: Mapped[str] = mapped_column(String(50), nullable=False)
+
     partita_iva: Mapped[str | None] = mapped_column(
         String(30), nullable=True
     )
+    codice_fiscale: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    email: Mapped[str | None] = mapped_column(
+        String(150), nullable=True
+    )
+    phone: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )
+
     active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
@@ -124,16 +133,27 @@ class Attendance(Base):
 Base.metadata.create_all(engine)
 
 
-# Migrate an existing database without deleting its records.
+# Add any missing staff columns without deleting existing records.
 staff_columns = {
     column["name"] for column in inspect(engine).get_columns("staff")
 }
 
-if "partita_iva" not in staff_columns:
-    with engine.begin() as connection:
-        connection.execute(
-            text("ALTER TABLE staff ADD COLUMN partita_iva VARCHAR(30)")
-        )
+new_columns = {
+    "partita_iva": "VARCHAR(30)",
+    "codice_fiscale": "VARCHAR(20)",
+    "email": "VARCHAR(150)",
+    "phone": "VARCHAR(30)",
+}
+
+with engine.begin() as connection:
+    for column_name, column_type in new_columns.items():
+        if column_name not in staff_columns:
+            connection.execute(
+                text(
+                    f"ALTER TABLE staff ADD COLUMN "
+                    f"{column_name} {column_type}"
+                )
+            )
 
 
 # --------------------------------------------------
@@ -167,6 +187,13 @@ TRANSLATIONS = {
         "category": "Category",
         "vat": "Partita IVA / VAT number (optional)",
         "vat_help": "Enter the VAT number if applicable. Leave blank if not applicable.",
+        "tax_code": "Codice Fiscale (optional)",
+        "email": "Email address (optional)",
+        "phone": "Phone number (optional)",
+        "save_details": "Save staff details",
+        "edit_details": "Edit staff details",
+        "details_saved": "Staff details updated successfully.",
+        "not_provided": "Not provided",
         "save_vat": "Save Partita IVA",
         "edit_vat": "Edit Partita IVA",
         "no_vat": "Not provided",
@@ -250,6 +277,13 @@ TRANSLATIONS = {
         "category": "Categoria",
         "vat": "Partita IVA (facoltativa)",
         "vat_help": "Inserisci la Partita IVA se applicabile. Lascia vuoto se non applicabile.",
+        "tax_code": "Codice Fiscale (facoltativo)",
+        "email": "Indirizzo e-mail (facoltativo)",
+        "phone": "Numero di telefono (facoltativo)",
+        "save_details": "Salva i dati",
+        "edit_details": "Modifica i dati",
+        "details_saved": "Dati aggiornati correttamente.",
+        "not_provided": "Non inserito",
         "save_vat": "Salva Partita IVA",
         "edit_vat": "Modifica Partita IVA",
         "no_vat": "Non inserita",
@@ -473,10 +507,15 @@ def attendance_frame(start_date, end_date, category=None):
             value.strftime("%H:%M")
             if hasattr(value, "strftime")
             else str(value)[:5] if value else ""
+        )
     )
-    )
+
     df["end_time"] = df["end_time"].apply(
-        lambda value: value.strftime("%H:%M") if hasattr(value, "strftime") else str(value)[:5] if value else ""
+        lambda value: (
+            value.strftime("%H:%M")
+            if hasattr(value, "strftime")
+            else str(value)[:5] if value else ""
+        )
     )
 
     def calculate_hours(row):
@@ -540,6 +579,7 @@ def make_excel(df):
 
 st.title(tr("title"))
 st.caption(tr("subtitle"))
+
 if page == "Magazzino":
     from inventory import render_inventory
     render_inventory()
@@ -592,13 +632,14 @@ if page == tr("dashboard"):
 
 
 # --------------------------------------------------
-# STAFF MANAGEMENT + PARTITA IVA
+# STAFF MANAGEMENT
 # --------------------------------------------------
 
 elif page == tr("staff"):
 
     st.subheader(tr("staff_management"))
 
+    # ADD STAFF MEMBER
     with st.expander(tr("add_staff"), expanded=True):
         with st.form("add_staff_form", clear_on_submit=True):
 
@@ -616,6 +657,20 @@ elif page == tr("staff"):
                 help=tr("vat_help")
             )
 
+            codice_fiscale = st.text_input(
+                tr("tax_code"),
+                max_chars=20
+            )
+
+            email = st.text_input(
+                tr("email")
+            )
+
+            phone = st.text_input(
+                tr("phone"),
+                max_chars=30
+            )
+
             submitted = st.form_submit_button(
                 tr("add"),
                 type="primary"
@@ -630,7 +685,10 @@ elif page == tr("staff"):
                             Staff(
                                 name=name.strip(),
                                 category=category,
-                                partita_iva=partita_iva.strip() or None
+                                partita_iva=partita_iva.strip() or None,
+                                codice_fiscale=codice_fiscale.strip() or None,
+                                email=email.strip() or None,
+                                phone=phone.strip() or None
                             )
                         )
                         session.commit()
@@ -722,7 +780,6 @@ elif page == tr("staff"):
             try:
                 backup_path = None
                 if engine.dialect.name == "sqlite":
-                    # Create the backup before changing the database.
                     backup_path = create_sqlite_backup()
                 else:
                     st.warning(backup_warning)
@@ -732,7 +789,6 @@ elif page == tr("staff"):
                     if person is None:
                         st.error(missing_message)
                     else:
-                        # Remove only this person's attendance rows first.
                         session.query(Attendance).filter(
                             Attendance.staff_id == selected_staff_id
                         ).delete(synchronize_session=False)
@@ -750,6 +806,10 @@ elif page == tr("staff"):
                     f"{type(exc).__name__}: {exc}"
                 )
 
+    # --------------------------------------------------
+    # STAFF LIST AND EDIT DETAILS
+    # --------------------------------------------------
+
     people = all_staff(active_only=False)
 
     if people:
@@ -758,13 +818,31 @@ elif page == tr("staff"):
         for person in people:
             with st.container(border=True):
 
-                col1, col2, col3 = st.columns([2, 2, 2])
+                col1, col2 = st.columns([2, 2])
 
                 col1.write(f"**{person.name}**")
                 col2.write(category_label(person.category))
-                col3.write(
+
+                detail1, detail2 = st.columns(2)
+
+                detail1.write(
                     f"**{tr('vat')}:** "
-                    f"{person.partita_iva or tr('no_vat')}"
+                    f"{person.partita_iva or tr('not_provided')}"
+                )
+                detail2.write(
+                    f"**{tr('tax_code')}:** "
+                    f"{person.codice_fiscale or tr('not_provided')}"
+                )
+
+                detail3, detail4 = st.columns(2)
+
+                detail3.write(
+                    f"**{tr('email')}:** "
+                    f"{person.email or tr('not_provided')}"
+                )
+                detail4.write(
+                    f"**{tr('phone')}:** "
+                    f"{person.phone or tr('not_provided')}"
                 )
 
                 col4, col5 = st.columns([1, 1])
@@ -796,8 +874,11 @@ elif page == tr("staff"):
                                 session.commit()
                         st.rerun()
 
-                with st.expander(f"{tr('edit_vat')} — {person.name}"):
-                    with st.form(f"vat_form_{person.id}"):
+                with st.expander(
+                    f"{tr('edit_details')} — {person.name}"
+                ):
+                    with st.form(f"staff_details_form_{person.id}"):
+
                         new_vat = st.text_input(
                             tr("vat"),
                             value=person.partita_iva or "",
@@ -806,16 +887,45 @@ elif page == tr("staff"):
                             help=tr("vat_help")
                         )
 
-                        save_vat = st.form_submit_button(tr("save_vat"))
+                        new_tax_code = st.text_input(
+                            tr("tax_code"),
+                            value=person.codice_fiscale or "",
+                            max_chars=20,
+                            key=f"tax_code_input_{person.id}"
+                        )
 
-                        if save_vat:
+                        new_email = st.text_input(
+                            tr("email"),
+                            value=person.email or "",
+                            key=f"email_input_{person.id}"
+                        )
+
+                        new_phone = st.text_input(
+                            tr("phone"),
+                            value=person.phone or "",
+                            max_chars=30,
+                            key=f"phone_input_{person.id}"
+                        )
+
+                        save_details = st.form_submit_button(
+                            tr("save_details")
+                        )
+
+                        if save_details:
                             with Session() as session:
                                 obj = session.get(Staff, person.id)
+
                                 if obj:
                                     obj.partita_iva = new_vat.strip() or None
+                                    obj.codice_fiscale = (
+                                        new_tax_code.strip() or None
+                                    )
+                                    obj.email = new_email.strip() or None
+                                    obj.phone = new_phone.strip() or None
+
                                     session.commit()
 
-                            st.success(tr("vat_saved"))
+                            st.success(tr("details_saved"))
                             st.rerun()
 
         st.caption(tr("deactivate_note"))
