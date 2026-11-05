@@ -1,8 +1,6 @@
 
 import os
-import sqlite3
-from pathlib import Path
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from io import BytesIO
 
 import bcrypt
@@ -63,6 +61,7 @@ if not st.session_state.authenticated_user:
         st.stop()
 
     with st.form("login_form"):
+
         username = st.selectbox(
             "Username",
             list(USERS.keys())
@@ -79,9 +78,11 @@ if not st.session_state.authenticated_user:
         )
 
         if login_clicked:
+
             if verify_password(password, USERS[username]):
                 st.session_state.authenticated_user = username
                 st.rerun()
+
             else:
                 st.error("Incorrect password. Please try again.")
 
@@ -103,6 +104,7 @@ if DATABASE_URL.startswith("postgres://"):
         "postgresql+psycopg://",
         1
     )
+
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace(
         "postgresql://",
@@ -137,6 +139,7 @@ class Base(DeclarativeBase):
 
 
 class Staff(Base):
+
     __tablename__ = "staff"
 
     id: Mapped[int] = mapped_column(
@@ -197,6 +200,7 @@ class Staff(Base):
 
 
 class Attendance(Base):
+
     __tablename__ = "attendance"
 
     id: Mapped[int] = mapped_column(
@@ -230,6 +234,11 @@ class Attendance(Base):
         nullable=True
     )
 
+    work_location: Mapped[str | None] = mapped_column(
+        String(150),
+        nullable=True
+    )
+
     notes: Mapped[str] = mapped_column(
         String(500),
         default=""
@@ -250,7 +259,6 @@ Base.metadata.create_all(engine)
 
 # ==================================================
 # SAFE DATABASE MIGRATION
-# Adds new columns without deleting existing records.
 # ==================================================
 
 staff_columns = {
@@ -258,7 +266,12 @@ staff_columns = {
     for column in inspect(engine).get_columns("staff")
 }
 
-new_columns = {
+attendance_columns = {
+    column["name"]
+    for column in inspect(engine).get_columns("attendance")
+}
+
+staff_new_columns = {
     "partita_iva": "VARCHAR(30)",
     "codice_fiscale": "VARCHAR(20)",
     "email": "VARCHAR(150)",
@@ -270,7 +283,7 @@ new_columns = {
 
 with engine.begin() as connection:
 
-    for column_name, column_type in new_columns.items():
+    for column_name, column_type in staff_new_columns.items():
 
         if column_name not in staff_columns:
 
@@ -281,10 +294,18 @@ with engine.begin() as connection:
                 )
             )
 
+    if "work_location" not in attendance_columns:
+
+        connection.execute(
+            text(
+                "ALTER TABLE attendance "
+                "ADD COLUMN work_location VARCHAR(150)"
+            )
+        )
+
 
 # ==================================================
 # STAFF CATEGORIES
-# Old categories are retained for existing records.
 # ==================================================
 
 CATEGORIES = [
@@ -355,6 +376,7 @@ DOCUMENT_TYPES = [
 # ==================================================
 
 TRANSLATIONS = {
+
     "English": {
         "nav": "Navigation",
         "dashboard": "Dashboard",
@@ -399,6 +421,8 @@ TRANSLATIONS = {
         "status": "Attendance status",
         "start": "Start time",
         "end": "End time",
+        "work_location": "Work location / City",
+        "location_placeholder": "Example: Catania, Augusta, Palermo",
         "notes": "Notes",
         "save": "Save attendance",
         "saved": "Attendance saved for",
@@ -417,7 +441,7 @@ TRANSLATIONS = {
         "details": "Attendance details",
         "csv": "Download CSV",
         "excel": "Download Excel",
-        "work_date": "Work date",
+        "work_date": "Date",
         "hours_col": "Hours",
         "total": "Total",
         "report_note": "Hours are calculated from start and end times. Breaks are not deducted. These figures are not a payroll calculation.",
@@ -478,6 +502,8 @@ TRANSLATIONS = {
         "status": "Stato della presenza",
         "start": "Ora di inizio",
         "end": "Ora di fine",
+        "work_location": "Luogo di lavoro / Città",
+        "location_placeholder": "Es. Catania, Augusta, Palermo",
         "notes": "Note",
         "save": "Salva presenza",
         "saved": "Presenza salvata per",
@@ -561,14 +587,18 @@ with st.sidebar:
 
 
 def category_label(category):
+
     if language == "Italiano":
         return CATEGORY_IT.get(category, category)
+
     return category
 
 
 def status_label(status):
+
     if language == "Italiano":
         return STATUS_IT.get(status, status)
+
     return status
 
 
@@ -607,7 +637,8 @@ def save_attendance(
     status,
     start_time,
     end_time,
-    notes
+    notes,
+    work_location
 ):
 
     with Session() as session:
@@ -630,9 +661,14 @@ def save_attendance(
         item.start_time = start_time
         item.end_time = end_time
         item.notes = notes.strip()
+        item.work_location = work_location.strip() or None
 
         session.commit()
 
+
+# ==================================================
+# ATTENDANCE REPORT DATA
+# ==================================================
 
 def attendance_frame(start_date, end_date, category=None):
 
@@ -644,9 +680,10 @@ def attendance_frame(start_date, end_date, category=None):
                     a.work_date,
                     st.name,
                     st.category,
-                    a.status,
                     a.start_time,
                     a.end_time,
+                    a.status,
+                    a.work_location,
                     a.notes
                 FROM attendance a
                 JOIN staff st ON st.id = a.staff_id
@@ -675,25 +712,25 @@ def attendance_frame(start_date, end_date, category=None):
         df["work_date"]
     ).dt.date
 
-    df["start_time"] = df["start_time"].apply(
-        lambda value: (
-            value.strftime("%H:%M")
-            if hasattr(value, "strftime")
-            else str(value)[:5] if value else ""
-        )
-    )
+    def format_time(value):
 
-    df["end_time"] = df["end_time"].apply(
-        lambda value: (
-            value.strftime("%H:%M")
-            if hasattr(value, "strftime")
-            else str(value)[:5] if value else ""
-        )
-    )
+        if hasattr(value, "strftime"):
+            return value.strftime("%H:%M")
+
+        if value:
+            return str(value)[:5]
+
+        return ""
+
+    df["start_time"] = df["start_time"].apply(format_time)
+    df["end_time"] = df["end_time"].apply(format_time)
+
+    df["work_location"] = df["work_location"].fillna("")
 
     def calculate_hours(row):
 
         try:
+
             start = datetime.strptime(
                 row["start_time"],
                 "%H:%M"
@@ -714,6 +751,7 @@ def attendance_frame(start_date, end_date, category=None):
             return round(duration, 2)
 
         except (ValueError, TypeError):
+
             return 0.0
 
     df["hours"] = df.apply(
@@ -723,6 +761,10 @@ def attendance_frame(start_date, end_date, category=None):
 
     return df
 
+
+# ==================================================
+# DISPLAY AND EXPORT
+# ==================================================
 
 def display_dataframe(df):
 
@@ -740,15 +782,29 @@ def display_dataframe(df):
     )
 
     result = result.rename(columns={
-        "work_date": tr("work_date"),
-        "name": tr("name"),
         "category": tr("category"),
-        "status": tr("status"),
         "start_time": tr("start"),
+        "name": tr("name"),
         "end_time": tr("end"),
-        "notes": tr("notes"),
+        "status": tr("status"),
+        "work_date": tr("work_date"),
+        "work_location": tr("work_location"),
         "hours": tr("hours_col"),
+        "notes": tr("notes"),
     })
+
+    # Exact requested column order.
+    result = result[[
+        tr("category"),
+        tr("start"),
+        tr("name"),
+        tr("end"),
+        tr("status"),
+        tr("work_date"),
+        tr("work_location"),
+        tr("hours_col"),
+        tr("notes"),
+    ]]
 
     return result
 
@@ -773,6 +829,27 @@ def make_excel(df):
             index=False,
             sheet_name=sheet_name
         )
+
+        worksheet = writer.sheets[sheet_name]
+
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+
+        # Make columns easier to read in Excel.
+        for column_cells in worksheet.columns:
+
+            max_length = 0
+            column_letter = column_cells[0].column_letter
+
+            for cell in column_cells:
+
+                value = str(cell.value or "")
+                max_length = max(max_length, len(value))
+
+            worksheet.column_dimensions[column_letter].width = min(
+                max(max_length + 2, 12),
+                35
+            )
 
     output.seek(0)
 
@@ -880,9 +957,7 @@ elif page == tr("staff"):
 
     st.subheader(tr("staff_management"))
 
-    # ----------------------------------------------
     # ADD STAFF
-    # ----------------------------------------------
 
     with st.expander(
         tr("add_staff"),
@@ -894,9 +969,7 @@ elif page == tr("staff"):
             clear_on_submit=True
         ):
 
-            name = st.text_input(
-                tr("name")
-            )
+            name = st.text_input(tr("name"))
 
             category = st.selectbox(
                 tr("category"),
@@ -914,9 +987,7 @@ elif page == tr("staff"):
                 max_chars=20
             )
 
-            email = st.text_input(
-                tr("email")
-            )
+            email = st.text_input(tr("email"))
 
             phone = st.text_input(
                 tr("phone"),
@@ -924,7 +995,10 @@ elif page == tr("staff"):
             )
 
             st.divider()
-            st.markdown("#### Identity document / Documento d'identità")
+
+            st.markdown(
+                "#### Identity document / Documento d'identità"
+            )
 
             document_type = st.selectbox(
                 tr("document_type"),
@@ -942,9 +1016,7 @@ elif page == tr("staff"):
                 format="DD/MM/YYYY"
             )
 
-            st.warning(
-                tr("document_warning")
-            )
+            st.warning(tr("document_warning"))
 
             submitted = st.form_submit_button(
                 tr("add"),
@@ -983,10 +1055,7 @@ elif page == tr("staff"):
 
                     st.rerun()
 
-
-    # ----------------------------------------------
     # STAFF LIST AND EDITING
-    # ----------------------------------------------
 
     people = all_staff(active_only=False)
 
@@ -1002,13 +1071,8 @@ elif page == tr("staff"):
 
                 col1, col2 = st.columns([2, 2])
 
-                col1.write(
-                    f"**{person.name}**"
-                )
-
-                col2.write(
-                    category_label(person.category)
-                )
+                col1.write(f"**{person.name}**")
+                col2.write(category_label(person.category))
 
                 detail1, detail2 = st.columns(2)
 
@@ -1101,7 +1165,6 @@ elif page == tr("staff"):
                                 session.commit()
 
                         st.rerun()
-
 
                 # EDIT STAFF DETAILS
 
@@ -1219,24 +1282,16 @@ elif page == tr("staff"):
 
                                         session.commit()
 
-                                st.success(
-                                    tr("details_saved")
-                                )
-
+                                st.success(tr("details_saved"))
                                 st.rerun()
 
-
-    # ----------------------------------------------
     # OPTIONAL DELETE SECTION
-    # ----------------------------------------------
 
     with st.expander(tr("delete_title")):
 
         st.warning(tr("delete_warning"))
 
-        delete_people = all_staff(
-            active_only=False
-        )
+        delete_people = all_staff(active_only=False)
 
         delete_choices = {
             f"{p.name} — {category_label(p.category)}": p.id
@@ -1376,6 +1431,16 @@ elif page == tr("record"):
             value=default_end
         )
 
+        work_location = st.text_input(
+            tr("work_location"),
+            value=(
+                old.work_location
+                if old and old.work_location
+                else ""
+            ),
+            placeholder=tr("location_placeholder")
+        )
+
         notes = st.text_input(
             tr("notes"),
             value=old.notes if old else "",
@@ -1393,7 +1458,8 @@ elif page == tr("record"):
                 status,
                 start_time,
                 end_time,
-                notes
+                notes,
+                work_location
             )
 
             st.success(
@@ -1497,35 +1563,16 @@ elif page == tr("weekly"):
             ]).sum()
         )
 
-        total_hours = float(
-            df["hours"].sum()
-        )
+        total_hours = float(df["hours"].sum())
 
         col1, col2, col3, col4 = st.columns(4)
 
-        col1.metric(
-            tr("entries"),
-            total_entries
-        )
+        col1.metric(tr("entries"), total_entries)
+        col2.metric(tr("attended"), attended_count)
+        col3.metric(tr("absent"), absent_count)
+        col4.metric(tr("hours"), f"{total_hours:.2f}")
 
-        col2.metric(
-            tr("attended"),
-            attended_count
-        )
-
-        col3.metric(
-            tr("absent"),
-            absent_count
-        )
-
-        col4.metric(
-            tr("hours"),
-            f"{total_hours:.2f}"
-        )
-
-        # ------------------------------------------
         # TOTALS BY CATEGORY
-        # ------------------------------------------
 
         st.markdown(
             f"### {tr('totals')}"
@@ -1558,9 +1605,7 @@ elif page == tr("weekly"):
             hide_index=True
         )
 
-        # ------------------------------------------
         # ATTENDANCE DETAILS
-        # ------------------------------------------
 
         st.markdown(
             f"### {tr('details')}"
@@ -1574,9 +1619,7 @@ elif page == tr("weekly"):
             hide_index=True
         )
 
-        # ------------------------------------------
         # EXPORT CSV AND EXCEL
-        # ------------------------------------------
 
         csv_data = report_df.to_csv(
             index=False
@@ -1588,9 +1631,7 @@ elif page == tr("weekly"):
             else "presenze"
         )
 
-        date_suffix = (
-            f"{start_date}_{end_date}"
-        )
+        date_suffix = f"{start_date}_{end_date}"
 
         col1, col2 = st.columns(2)
 
