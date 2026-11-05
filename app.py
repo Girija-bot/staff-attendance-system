@@ -23,7 +23,106 @@ st.set_page_config(
     page_icon="📋",
     layout="wide"
 )
+import bcrypt
 
+def verify_password(password, stored_hash):
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            stored_hash.encode("utf-8")
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+USERS = {
+    "Girija": os.getenv("GIRIJA_PASSWORD_HASH", ""),
+    "Signor Paolo": os.getenv("PAOLO_PASSWORD_HASH", ""),
+}
+
+if "authenticated_user" not in st.session_state:
+    st.session_state.authenticated_user = None
+
+if not st.session_state.authenticated_user:
+    st.title("🔐 Staff Attendance Login")
+    st.caption("Please sign in to access the application.")
+
+    if not all(USERS.values()):
+        st.error("Login is not configured. Please contact the administrator.")
+        st.stop()
+
+    with st.form("login_form"):
+        username = st.selectbox("Username", list(USERS.keys()))
+        password = st.text_input("Password", type="password")
+        login_clicked = st.form_submit_button("Login", type="primary")
+
+        if login_clicked:
+            if verify_password(password, USERS[username]):
+                st.session_state.authenticated_user = username
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
+
+    st.stop()
+# --------------------------------------------------
+# SECURE LOGIN
+# --------------------------------------------------
+
+import bcrypt
+
+def verify_password(password, stored_hash):
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            stored_hash.encode("utf-8")
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+USERS = {
+    "Girija": os.getenv("GIRIJA_PASSWORD_HASH", ""),
+    "Signor Paolo": os.getenv("PAOLO_PASSWORD_HASH", ""),
+}
+
+if "authenticated_user" not in st.session_state:
+    st.session_state.authenticated_user = None
+
+if not st.session_state.authenticated_user:
+
+    st.title("🔐 Staff Attendance Login")
+    st.caption("Please sign in to access the application.")
+
+    if not all(USERS.values()):
+        st.error(
+            "Login is not configured. Please contact the administrator."
+        )
+        st.stop()
+
+    with st.form("login_form"):
+        username = st.selectbox(
+            "Username",
+            list(USERS.keys())
+        )
+
+        password = st.text_input(
+            "Password",
+            type="password"
+        )
+
+        login_clicked = st.form_submit_button(
+            "Login",
+            type="primary"
+        )
+
+        if login_clicked:
+            if verify_password(password, USERS[username]):
+                st.session_state.authenticated_user = username
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
+
+    st.stop()
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///attendance.db")
 
 connect_args = (
@@ -385,7 +484,14 @@ with st.sidebar:
         index=0,
         key="app_language"
     )
+    if st.session_state.authenticated_user:
+       st.caption(
+        f"Logged in as: {st.session_state.authenticated_user}"
+    )
 
+    if st.button("Logout"):
+        st.session_state.authenticated_user = None
+        st.rerun()
     def tr(key):
         return TRANSLATIONS[language][key]
 
