@@ -1,5 +1,6 @@
 
 import os
+import math
 from datetime import date, datetime, time
 from io import BytesIO
 
@@ -8,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from sqlalchemy import (
-    create_engine, text, Integer, String, Date, Time,
+    create_engine, text, Integer, String, Date, Time, Float,
     ForeignKey, UniqueConstraint, inspect
 )
 from sqlalchemy.orm import (
@@ -254,7 +255,70 @@ class Attendance(Base):
 
 
 # Create missing tables without deleting existing tables.
-Base.metadata.create_all(engine)
+
+class Payment(Base):
+
+    __tablename__ = "payments"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True
+    )
+
+    # Nullable so payment history survives staff deletion.
+    staff_id: Mapped[int | None] = mapped_column(
+        ForeignKey("staff.id", ondelete="SET NULL"),
+        nullable=True
+    )
+
+    # Keep a snapshot of the employee's details.
+    staff_name: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False
+    )
+
+    category: Mapped[str] = mapped_column(
+        String(80),
+        nullable=False
+    )
+
+    period_start: Mapped[date] = mapped_column(
+        Date,
+        nullable=False
+    )
+
+    period_end: Mapped[date] = mapped_column(
+        Date,
+        nullable=False
+    )
+
+    hours_worked: Mapped[float] = mapped_column(
+        Float,
+        default=0,
+        nullable=False
+    )
+
+    work_locations: Mapped[str] = mapped_column(
+        String(1000),
+        default="",
+        nullable=False
+    )
+
+    amount: Mapped[float] = mapped_column(
+        Float,
+        nullable=False
+    )
+
+    payment_date: Mapped[date] = mapped_column(
+        Date,
+        nullable=False
+    )
+
+    notes: Mapped[str] = mapped_column(
+        String(500),
+        default=""
+    )
+
 
 
 # ==================================================
@@ -573,7 +637,8 @@ with st.sidebar:
         tr("record"),
         tr("staff"),
         tr("weekly"),
-        "Magazzino"
+        "Magazzino",
+        "Pagamenti"
     ]
 
     page = st.radio(
@@ -677,6 +742,7 @@ def attendance_frame(start_date, end_date, category=None):
         rows = session.execute(
             text("""
                 SELECT
+                    a.staff_id,
                     a.work_date,
                     st.name,
                     st.category,
@@ -879,6 +945,322 @@ if page == "Magazzino":
 # ==================================================
 # DASHBOARD
 # ==================================================
+
+# ==================================================
+# PAGAMENTI
+# ==================================================
+
+if page == "Pagamenti":
+
+    st.subheader("💶 Gestione dei pagamenti")
+
+    st.caption(
+        "Seleziona il personale, controlla le ore "
+        "registrate e inserisci manualmente l'importo."
+    )
+
+    people = all_staff(active_only=True)
+
+    if not people:
+
+        st.info("Nessun dipendente attivo registrato.")
+
+    else:
+
+        # CATEGORY SELECTION
+
+        selected_category = st.selectbox(
+            "Categoria",
+            CATEGORIES,
+            format_func=category_label,
+            key="payment_category"
+        )
+
+        # EMPLOYEE SELECTION
+
+        category_people = [
+            person for person in people
+            if person.category == selected_category
+        ]
+
+        if not category_people:
+
+            st.info(
+                "Nessun dipendente attivo in questa categoria."
+            )
+
+        else:
+
+            selected_person = st.selectbox(
+                "Nome del dipendente",
+                category_people,
+                format_func=lambda person: person.name,
+                key="payment_employee"
+            )
+
+            st.divider()
+
+            # DATE RANGE
+
+            st.markdown("### Periodo di lavoro")
+
+            col1, col2 = st.columns(2)
+
+            period_start = col1.date_input(
+                "Data iniziale",
+                value=date.today().replace(day=1),
+                format="DD/MM/YYYY",
+                key="payment_start"
+            )
+
+            period_end = col2.date_input(
+                "Data finale",
+                value=date.today(),
+                format="DD/MM/YYYY",
+                key="payment_end"
+            )
+
+            if period_start > period_end:
+
+                st.error(
+                    "La data iniziale deve precedere "
+                    "quella finale."
+                )
+
+            else:
+
+                # GET ATTENDANCE FOR SELECTED EMPLOYEE
+
+                employee_df = attendance_frame(
+                    period_start,
+                    period_end,
+                    selected_category
+                )
+
+                if not employee_df.empty:
+
+                    employee_df = employee_df[employee_df["staff_id"] == selected_person.id
+                    ].copy()
+
+                    employee_df = employee_df[
+                        employee_df["status"].isin([
+                            "Present",
+                            "Called in - attended"
+                        ])
+                    ].copy()
+
+                # CALCULATE ATTENDED HOURS ONLY
+
+                total_hours = (
+                    float(employee_df["hours"].sum())
+                    if not employee_df.empty
+                    else 0.0
+                )
+
+                # GET WORK LOCATIONS
+
+                locations = []
+
+                if not employee_df.empty:
+
+                    locations = sorted({
+                        str(location).strip()
+                        for location in employee_df[
+                            "work_location"
+                        ].fillna("").tolist()
+                        if str(location).strip()
+                    })
+
+                st.markdown("### Riepilogo presenze")
+
+                col1, col2 = st.columns(2)
+
+                col1.metric(
+                    "Ore lavorate",
+                    f"{total_hours:.2f}"
+                )
+
+                col2.metric(
+                    "Giornate lavorate",
+                    (
+                        employee_df["work_date"].nunique()
+                        if not employee_df.empty
+                        else 0
+                    )
+                )
+
+                st.markdown("**Luoghi di lavoro**")
+
+                if locations:
+
+                    for location in locations:
+                        st.write(f"📍 {location}")
+
+                else:
+
+                    st.info(
+                        "Nessun luogo di lavoro registrato "
+                        "per questo periodo."
+                    )
+
+                st.divider()
+
+                # MANUAL PAYMENT ENTRY
+
+                st.markdown("### Inserisci pagamento")
+
+                with st.form("new_payment_form"):
+
+                    amount_input = st.text_input(
+                        "Importo da pagare (€)",
+                        placeholder="Es. 500,00"
+                    )
+
+                    payment_date = st.date_input(
+                        "Data del pagamento",
+                        value=date.today(),
+                        format="DD/MM/YYYY"
+                    )
+
+                    payment_notes = st.text_area(
+                        "Note",
+                        placeholder=(
+                            "Eventuali informazioni "
+                            "aggiuntive..."
+                        ),
+                        max_chars=500
+                    )
+
+                    save_payment = st.form_submit_button(
+                        "💾 Salva pagamento",
+                        type="primary"
+                    )
+
+                    if save_payment:
+
+                        # Accept Italian decimal commas.
+                        cleaned_amount = (
+                            amount_input
+                            .strip()
+                            .replace("€", "")
+                            .replace(" ", "")
+                        )
+
+                        if (
+                            "," in cleaned_amount
+                            and "." in cleaned_amount
+                        ):
+                            cleaned_amount = (
+                                cleaned_amount
+                                .replace(".", "")
+                                .replace(",", ".")
+                            )
+
+                        else:
+                            cleaned_amount = (
+                                cleaned_amount.replace(",", ".")
+                            )
+
+                        try:
+
+                            amount = float(cleaned_amount)
+
+                            if not math.isfinite(amount) or amount <= 0:
+                                raise ValueError()
+
+                        except (ValueError, TypeError):
+
+                            st.error(
+                                "Inserisci un importo valido, "
+                                "ad esempio 500,00."
+                            )
+
+                        else:
+
+                            with Session() as session:
+
+                                payment = Payment(
+                                    staff_id=selected_person.id,
+                                    staff_name=selected_person.name,
+                                    category=selected_person.category,
+                                    period_start=period_start,
+                                    period_end=period_end,
+                                    hours_worked=total_hours,
+                                    work_locations="; ".join(locations),
+                                    amount=amount,
+                                    payment_date=payment_date,
+                                    notes=payment_notes.strip()
+                                )
+
+                                session.add(payment)
+                                session.commit()
+
+                            st.success(
+                                "Pagamento registrato correttamente!"
+                            )
+
+                            st.rerun()
+
+    # ==================================================
+    # PAYMENT HISTORY
+    # ==================================================
+
+    st.divider()
+
+    st.markdown("### 📚 Storico dei pagamenti")
+
+    with Session() as session:
+
+        payment_records = (
+            session.query(Payment)
+            .order_by(
+                Payment.payment_date.desc(),
+                Payment.id.desc()
+            )
+            .all()
+        )
+
+        history_data = [
+            {
+                "Dipendente": p.staff_name,
+                "Categoria": category_label(p.category),
+                "Dal": p.period_start.strftime("%d/%m/%Y"),
+                "Al": p.period_end.strftime("%d/%m/%Y"),
+                "Ore lavorate": round(p.hours_worked, 2),
+                "Luoghi": p.work_locations,
+                "Importo (€)": f"{p.amount:.2f}",
+                "Data pagamento": p.payment_date.strftime("%d/%m/%Y"),
+                "Note": p.notes or ""
+            }
+            for p in payment_records
+        ]
+
+    if history_data:
+
+        history_df = pd.DataFrame(history_data)
+
+        st.dataframe(
+            history_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        csv_payments = history_df.to_csv(
+            index=False
+        ).encode("utf-8-sig")
+
+        st.download_button(
+            "📥 Scarica storico pagamenti CSV",
+            data=csv_payments,
+            file_name="storico_pagamenti.csv",
+            mime="text/csv"
+        )
+
+    else:
+
+        st.info("Nessun pagamento registrato.")
+
+    st.stop()
 
 if page == tr("dashboard"):
 
@@ -1326,6 +1708,12 @@ elif page == tr("staff"):
                     ).delete(
                         synchronize_session=False
                     )
+                    session.query(Payment).filter(
+    Payment.staff_id == selected_id
+).update(
+    {Payment.staff_id: None},
+    synchronize_session=False
+)
 
                     obj = session.get(
                         Staff,
