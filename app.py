@@ -254,10 +254,8 @@ class Attendance(Base):
     )
 
 
-# Create missing tables without deleting existing tables.
-
+# Payment model: keep a snapshot so payment history remains available.
 class Payment(Base):
-
     __tablename__ = "payments"
 
     id: Mapped[int] = mapped_column(
@@ -319,6 +317,11 @@ class Payment(Base):
         default=""
     )
 
+
+
+# Create missing tables without deleting or replacing existing tables.
+# This is intentionally after Payment is declared so SQLAlchemy registers it.
+Base.metadata.create_all(engine)
 
 
 # ==================================================
