@@ -1,15 +1,22 @@
 
 import os
 import math
+import uuid
+import boto3
+from botocore.config import Config
 from datetime import date, datetime, time
 from io import BytesIO
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import bcrypt
 import pandas as pd
 import streamlit as st
 
 from sqlalchemy import (
-    create_engine, text, Integer, String, Date, Time, Float,
+    create_engine, text, Integer, String, Date, Time, DateTime, Float,
     ForeignKey, UniqueConstraint, inspect
 )
 from sqlalchemy.orm import (
@@ -50,7 +57,7 @@ USERS = {
 if "authenticated_user" not in st.session_state:
     st.session_state.authenticated_user = None
 
-if not st.session_state.authenticated_user:
+if st.session_state.authenticated_user not in USERS:
 
     st.title("🔐 Staff Attendance Login")
     st.caption("Please sign in to access the application.")
@@ -319,13 +326,130 @@ class Payment(Base):
 
 
 
+class StaffDocument(Base):
+    """Metadata for a file stored in the private Neon Object Storage bucket."""
+
+    __tablename__ = "staff_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    staff_id: Mapped[int] = mapped_column(
+        ForeignKey("staff.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True
+    )
+    original_filename: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    object_key: Mapped[str] = mapped_column(
+        String(500), nullable=False, unique=True
+    )
+    content_type: Mapped[str] = mapped_column(
+        String(100), nullable=False
+    )
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    uploaded_by: Mapped[str] = mapped_column(
+        String(80), nullable=False
+    )
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
+class StaffDocumentAccessLog(Base):
+    """Records when an authenticated user is issued a document download link."""
+
+    __tablename__ = "staff_document_access_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("staff_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    username: Mapped[str] = mapped_column(String(80), nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    accessed_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
 # Create missing tables without deleting or replacing existing tables.
 # This is intentionally after Payment is declared so SQLAlchemy registers it.
 Base.metadata.create_all(engine)
 
 
 # ==================================================
-# SAFE DATABASE MIGRATION
+# PRIVATE STAFF DOCUMENT STORAGE
+# ==================================================
+
+DOCUMENT_BUCKET = os.getenv("NEON_STORAGE_BUCKET", "uploads")
+MAX_DOCUMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+ALLOWED_DOCUMENT_TYPES = {
+    ".pdf": ("application/pdf", lambda data: data.startswith(b"%PDF-")),
+    ".jpg": ("image/jpeg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    ".jpeg": ("image/jpeg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    ".png": (
+        "image/png",
+        lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")
+    ),
+}
+
+
+def get_private_storage_client():
+    """Create an S3-compatible client for the private Neon bucket."""
+    required = [
+        "AWS_ENDPOINT_URL_S3",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_REGION",
+    ]
+    missing = [name for name in required if not os.getenv(name)]
+    if missing:
+        raise RuntimeError(
+            "Private document storage is not configured. Missing: "
+            + ", ".join(missing)
+        )
+
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3",
+        region_name=os.environ["AWS_REGION"],
+        endpoint_url=os.environ["AWS_ENDPOINT_URL_S3"],
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            connect_timeout=10,
+            read_timeout=30,
+            retries={"max_attempts": 3, "mode": "standard"},
+        ),
+    )
+
+
+def validate_staff_document(filename, content):
+    """Allow only small PDF/JPEG/PNG files whose signatures match extensions."""
+    safe_name = str(filename or "document").replace("\\", "/").split("/")[-1]
+    safe_name = "".join(ch for ch in safe_name if ch.isprintable())[:255]
+    extension = os.path.splitext(safe_name)[1].lower()
+
+    if not safe_name or extension not in ALLOWED_DOCUMENT_TYPES:
+        raise ValueError("Allowed file types: PDF, JPG, JPEG and PNG.")
+    if not content:
+        raise ValueError("The selected file is empty.")
+    if len(content) > MAX_DOCUMENT_SIZE:
+        raise ValueError("The maximum file size is 10 MB.")
+
+    content_type, signature_check = ALLOWED_DOCUMENT_TYPES[extension]
+    if not signature_check(content):
+        raise ValueError(
+            "The file content does not match its extension. Please select a valid document."
+        )
+    return safe_name, content_type
+
+
 # ==================================================
 
 staff_columns = {
@@ -450,6 +574,7 @@ TRANSLATIONS = {
         "record": "Record attendance",
         "staff": "Staff management",
         "weekly": "Attendance report",
+        "documents": "Staff documents",
         "title": "📋 Staff Attendance Management",
         "subtitle": "Staff register and attendance management",
         "today": "Today",
@@ -513,12 +638,12 @@ TRANSLATIONS = {
         "total": "Total",
         "report_note": "Hours are calculated from start and end times. Breaks are not deducted. These figures are not a payroll calculation.",
         "empty_category": "No active staff in this category. Add staff in Staff management.",
-        "privacy": "Use this application only for authorised workforce administration. Protect personal information and do not upload identity document scans until secure private storage is configured.",
+        "privacy": "Use this application only for authorised workforce administration. Staff documents are stored in a private bucket and are available only to authenticated Girija and Signor Paolo accounts.",
         "logout": "Logout",
         "logged_in": "Logged in as",
-        "document_warning": "Do not upload passport or residence permit scans here. This version stores document details only.",
+        "document_warning": "Upload only staff documents that you are authorised to store. Allowed: PDF, JPG and PNG, maximum 10 MB.",
         "delete_title": "Delete a staff member",
-        "delete_warning": "Deleting a person also deletes their attendance history. Prefer deactivating staff instead.",
+        "delete_warning": "Deleting a person also deletes their attendance history. Staff with stored documents cannot be deleted; deactivate them instead.",
         "confirm_delete": "I understand and confirm deletion",
         "delete_button": "Delete selected person",
         "deleted": "Staff member and attendance history deleted.",
@@ -531,6 +656,7 @@ TRANSLATIONS = {
         "record": "Registra presenze",
         "staff": "Gestione del personale",
         "weekly": "Report presenze",
+        "documents": "Documenti del personale",
         "title": "📋 Gestione presenze del personale",
         "subtitle": "Gestione del personale e registro delle presenze",
         "today": "Oggi",
@@ -594,12 +720,12 @@ TRANSLATIONS = {
         "total": "Totale",
         "report_note": "Le ore sono calcolate tra l'ora di inizio e quella di fine. Le pause non vengono detratte. Questi dati non costituiscono un calcolo della retribuzione.",
         "empty_category": "Non ci sono persone attive in questa categoria. Aggiungile in Gestione del personale.",
-        "privacy": "Usa questa applicazione solo per la gestione autorizzata del personale. Proteggi i dati personali e non caricare scansioni dei documenti finché non è configurato un archivio privato sicuro.",
+        "privacy": "Usa questa applicazione solo per la gestione autorizzata del personale. I documenti sono conservati in un archivio privato e sono accessibili solo agli account autenticati di Girija e Signor Paolo.",
         "logout": "Esci",
         "logged_in": "Accesso effettuato come",
-        "document_warning": "Non caricare qui scansioni di passaporti o permessi di soggiorno. Questa versione memorizza solo i dettagli del documento.",
+        "document_warning": "Carica solo documenti del personale che sei autorizzato a conservare. Formati consentiti: PDF, JPG e PNG, massimo 10 MB.",
         "delete_title": "Elimina una persona",
-        "delete_warning": "L'eliminazione di una persona cancella anche lo storico delle presenze. È preferibile disattivare il personale.",
+        "delete_warning": "L'eliminazione di una persona cancella anche lo storico delle presenze. Non è possibile eliminare persone con documenti archiviati: disattivale invece.",
         "confirm_delete": "Ho capito e confermo l'eliminazione",
         "delete_button": "Elimina la persona selezionata",
         "deleted": "Persona e storico delle presenze eliminati.",
@@ -640,6 +766,7 @@ with st.sidebar:
         tr("record"),
         tr("staff"),
         tr("weekly"),
+        tr("documents"),
         "Magazzino",
         "Pagamenti"
     ]
@@ -942,6 +1069,193 @@ if page == "Magazzino":
     from inventory import render_inventory
 
     render_inventory()
+    st.stop()
+
+
+# ==================================================
+# STAFF DOCUMENTS
+# ==================================================
+
+if page == tr("documents"):
+
+    st.subheader(tr("documents"))
+    st.caption(
+        "Private staff files. Both Girija and Signor Paolo can view, upload "
+        "and download documents for every staff member."
+        if language == "English"
+        else "Documenti privati del personale. Sia Girija sia Signor Paolo "
+             "possono visualizzare, caricare e scaricare i documenti di tutto il personale."
+    )
+    st.info(
+        "Files stay in the private Neon bucket. Downloads use temporary "
+        "links that expire after 60 seconds."
+        if language == "English"
+        else "I file restano nel bucket privato Neon. I link di download "
+             "temporanei scadono dopo 60 secondi."
+    )
+
+    people_for_documents = all_staff(active_only=False)
+
+    if not people_for_documents:
+        st.info("No staff members found." if language == "English" else "Nessun dipendente trovato.")
+    else:
+        staff_by_label = {
+            f"{person.name} — {category_label(person.category)} (ID {person.id})": person
+            for person in people_for_documents
+        }
+        selected_staff_label = st.selectbox(
+            "Staff member / Dipendente",
+            list(staff_by_label.keys()),
+            key="staff_document_person"
+        )
+        selected_staff = staff_by_label[selected_staff_label]
+
+        st.markdown("#### Upload a document / Carica un documento")
+        uploaded_document = st.file_uploader(
+            "Choose a PDF, JPG or PNG file / Scegli un file PDF, JPG o PNG",
+            type=["pdf", "jpg", "jpeg", "png"],
+            key=f"staff_document_upload_{selected_staff.id}"
+        )
+
+        if st.button(
+            "Upload document / Carica documento",
+            type="primary",
+            disabled=uploaded_document is None,
+            key=f"upload_staff_document_{selected_staff.id}"
+        ):
+            try:
+                file_bytes = uploaded_document.getvalue()
+                safe_filename, detected_content_type = validate_staff_document(
+                    uploaded_document.name,
+                    file_bytes
+                )
+                storage = get_private_storage_client()
+                object_key = (
+                    f"staff-documents/{selected_staff.id}/"
+                    f"{uuid.uuid4().hex}{os.path.splitext(safe_filename)[1].lower()}"
+                )
+
+                # Upload first; if the database insert fails, remove the orphaned object.
+                storage.put_object(
+                    Bucket=DOCUMENT_BUCKET,
+                    Key=object_key,
+                    Body=file_bytes,
+                    ContentType=detected_content_type,
+                )
+
+                try:
+                    with Session() as session:
+                        document_record = StaffDocument(
+                            staff_id=selected_staff.id,
+                            original_filename=safe_filename,
+                            object_key=object_key,
+                            content_type=detected_content_type,
+                            file_size=len(file_bytes),
+                            uploaded_by=st.session_state.authenticated_user,
+                        )
+                        session.add(document_record)
+                        session.commit()
+                except Exception:
+                    try:
+                        storage.delete_object(Bucket=DOCUMENT_BUCKET, Key=object_key)
+                    except Exception:
+                        pass
+                    raise
+
+                st.success(
+                    "Document uploaded successfully." if language == "English"
+                    else "Documento caricato correttamente."
+                )
+                st.rerun()
+
+            except ValueError as exc:
+                st.error(str(exc))
+            except Exception:
+                st.error(
+                    "Upload failed. Check the private storage configuration and try again."
+                    if language == "English"
+                    else "Caricamento non riuscito. Verifica la configurazione dell'archivio privato e riprova."
+                )
+
+        st.divider()
+        st.markdown("#### Stored documents / Documenti archiviati")
+
+        with Session() as session:
+            stored_documents = (
+                session.query(StaffDocument)
+                .filter(StaffDocument.staff_id == selected_staff.id)
+                .order_by(StaffDocument.uploaded_at.desc())
+                .all()
+            )
+            # Detach simple values before closing the session.
+            document_rows = [
+                {
+                    "id": item.id,
+                    "filename": item.original_filename,
+                    "object_key": item.object_key,
+                    "content_type": item.content_type,
+                    "file_size": item.file_size,
+                    "uploaded_by": item.uploaded_by,
+                    "uploaded_at": item.uploaded_at,
+                }
+                for item in stored_documents
+            ]
+
+        if not document_rows:
+            st.info("No documents uploaded for this person yet." if language == "English" else "Nessun documento caricato per questa persona.")
+        else:
+            for document_row in document_rows:
+                left, middle, right = st.columns([4, 2, 1])
+                left.write(f"**{document_row['filename']}**")
+                left.caption(
+                    f"{document_row['file_size'] / 1024:.1f} KB · "
+                    f"Uploaded by {document_row['uploaded_by']} · "
+                    f"{document_row['uploaded_at'].strftime('%d/%m/%Y %H:%M')}"
+                )
+                middle.write(document_row["content_type"])
+
+                try:
+                    storage = get_private_storage_client()
+                    safe_download_name = document_row["filename"].replace('"', "")
+                    temporary_url = storage.generate_presigned_url(
+                        "get_object",
+                        Params={
+                            "Bucket": DOCUMENT_BUCKET,
+                            "Key": document_row["object_key"],
+                            "ResponseContentDisposition": (
+                                f'attachment; filename="{safe_download_name}"'
+                            ),
+                        },
+                        ExpiresIn=60,
+                    )
+                    audit_state_key = (
+                        f"document_link_logged_{document_row['id']}_"
+                        f"{st.session_state.authenticated_user}"
+                    )
+                    if not st.session_state.get(audit_state_key, False):
+                        with Session() as session:
+                            session.add(StaffDocumentAccessLog(
+                                document_id=document_row["id"],
+                                username=st.session_state.authenticated_user,
+                                action="download_link_created",
+                            ))
+                            session.commit()
+                        st.session_state[audit_state_key] = True
+
+                    right.link_button(
+                        "Download" if language == "English" else "Scarica",
+                        temporary_url,
+                    )
+                except Exception:
+                    right.error(
+                        "Unavailable" if language == "English" else "Non disponibile"
+                    )
+                    st.warning(
+                        "A download link could not be created. Check the storage settings."
+                        if language == "English"
+                        else "Impossibile creare il link di download. Verifica le impostazioni dell'archivio."
+                    )
+
     st.stop()
 
 
@@ -1705,30 +2019,36 @@ elif page == tr("staff"):
                 selected_id = delete_choices[selected_person]
 
                 with Session() as session:
+                    has_documents = session.query(StaffDocument.id).filter(
+                        StaffDocument.staff_id == selected_id
+                    ).first()
 
-                    session.query(Attendance).filter(
-                        Attendance.staff_id == selected_id
-                    ).delete(
-                        synchronize_session=False
-                    )
-                    session.query(Payment).filter(
-    Payment.staff_id == selected_id
-).update(
-    {Payment.staff_id: None},
-    synchronize_session=False
-)
+                    if has_documents:
+                        st.error(
+                            "This staff member has stored documents. Deactivate the person instead of deleting them."
+                            if language == "English"
+                            else "Questa persona ha documenti archiviati. Disattivala invece di eliminarla."
+                        )
+                    else:
+                        session.query(Attendance).filter(
+                            Attendance.staff_id == selected_id
+                        ).delete(
+                            synchronize_session=False
+                        )
+                        session.query(Payment).filter(
+                            Payment.staff_id == selected_id
+                        ).update(
+                            {Payment.staff_id: None},
+                            synchronize_session=False
+                        )
 
-                    obj = session.get(
-                        Staff,
-                        selected_id
-                    )
+                        obj = session.get(Staff, selected_id)
+                        if obj:
+                            session.delete(obj)
+                            session.commit()
 
-                    if obj:
-                        session.delete(obj)
-                        session.commit()
-
-                st.success(tr("deleted"))
-                st.rerun()
+                        st.success(tr("deleted"))
+                        st.rerun()
 
 
 # ==================================================
