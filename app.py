@@ -1714,6 +1714,11 @@ elif page == tr("staff"):
                 value=None,
                 format="DD/MM/YYYY"
             )
+            uploaded_staff_document = st.file_uploader(
+    "Allega documento / Attach document (PDF, JPG, PNG)",
+    type=["pdf", "jpg", "jpeg", "png"],
+    key="new_staff_document_upload"
+)
 
             st.warning(tr("document_warning"))
 
@@ -1724,35 +1729,145 @@ elif page == tr("staff"):
 
             if submitted:
 
-                if not name.strip():
+               if not name.strip():
 
-                    st.error(tr("enter_name"))
+                 st.error(tr("enter_name"))
 
-                else:
+               else:
 
-                    with Session() as session:
+                new_staff_id = None
 
-                        session.add(
-                            Staff(
-                                name=name.strip(),
-                                category=category,
-                                partita_iva=partita_iva.strip() or None,
-                                codice_fiscale=codice_fiscale.strip() or None,
-                                email=email.strip() or None,
-                                phone=phone.strip() or None,
-                                identity_doc_type=document_type or None,
-                                identity_doc_number=document_number.strip() or None,
-                                identity_doc_expiry=document_expiry
-                            )
-                        )
+        try:
+            prepared_document = None
 
-                        session.commit()
+            # Validate the attachment before saving the staff member.
+            if uploaded_staff_document is not None:
 
-                    st.success(
-                        f"{tr('added')} {name.strip()}."
+                file_bytes = uploaded_staff_document.getvalue()
+
+                safe_filename, detected_content_type = (
+                    validate_staff_document(
+                        uploaded_staff_document.name,
+                        file_bytes
+                    )
+                )
+
+                prepared_document = (
+                    file_bytes,
+                    safe_filename,
+                    detected_content_type
+                )
+
+            # Save the staff member first.
+            with Session() as session:
+
+                new_staff = Staff(
+                    name=name.strip(),
+                    category=category,
+                    partita_iva=partita_iva.strip() or None,
+                    codice_fiscale=codice_fiscale.strip() or None,
+                    email=email.strip() or None,
+                    phone=phone.strip() or None,
+                    identity_doc_type=document_type or None,
+                    identity_doc_number=document_number.strip() or None,
+                    identity_doc_expiry=document_expiry
+                )
+
+                session.add(new_staff)
+                session.commit()
+
+                new_staff_id = new_staff.id
+
+        except ValueError as exc:
+
+            st.error(str(exc))
+
+        except Exception:
+
+            st.error(
+                "Could not save the staff member. Please try again."
+            )
+
+        else:
+
+            # Upload the attachment using the existing private storage.
+            if prepared_document is not None:
+
+                file_bytes, safe_filename, detected_content_type = (
+                    prepared_document
+                )
+
+                object_key = (
+                    f"staff-documents/{new_staff_id}/"
+                    f"{uuid.uuid4().hex}"
+                    f"{os.path.splitext(safe_filename)[1].lower()}"
+                )
+
+                try:
+
+                    storage = get_private_storage_client()
+
+                    storage.put_object(
+                        Bucket=DOCUMENT_BUCKET,
+                        Key=object_key,
+                        Body=file_bytes,
+                        ContentType=detected_content_type,
                     )
 
-                    st.rerun()
+                    try:
+
+                        with Session() as session:
+
+                            document_record = StaffDocument(
+                                staff_id=new_staff_id,
+                                original_filename=safe_filename,
+                                object_key=object_key,
+                                content_type=detected_content_type,
+                                file_size=len(file_bytes),
+                                uploaded_by=(
+                                    st.session_state.authenticated_user
+                                ),
+                            )
+
+                            session.add(document_record)
+                            session.commit()
+
+                    except Exception:
+
+                        try:
+                            storage.delete_object(
+                                Bucket=DOCUMENT_BUCKET,
+                                Key=object_key
+                            )
+                        except Exception:
+                            pass
+
+                        raise
+
+                    st.success(
+                        "Staff member and document saved successfully."
+                        if language == "English"
+                        else "Persona e documento salvati correttamente."
+                    )
+
+                except Exception:
+
+                    st.warning(
+                        "The staff member was saved, but the document "
+                        "upload failed. You can upload it later from "
+                        "Staff documents."
+                        if language == "English"
+                        else "La persona è stata salvata, ma il caricamento "
+                             "del documento non è riuscito. Puoi caricarlo "
+                             "successivamente da Documenti del personale."
+                    )
+
+            else:
+
+                st.success(
+                    f"{tr('added')} {name.strip()}."
+                )
+
 
     # STAFF LIST AND EDITING
 
