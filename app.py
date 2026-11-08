@@ -2147,9 +2147,304 @@ elif page == tr("staff"):
                         st.rerun()
 
 
+    # ==================================================
+    # SEPARATE STAFF REMOVAL SECTION
+    # ==================================================
+
+    st.divider()
+
+    with st.expander(
+        "🗑️ Remove staff member / Rimuovi una persona"
+    ):
+
+        st.warning(
+            "This removes the person from the active staff list only. "
+            "Attendance, payment history, uploaded documents and all "
+            "other records will be preserved. You can reactivate them later."
+            if language == "English"
+            else
+            "Questa operazione rimuove la persona solo dall'elenco attivo. "
+            "Presenze, pagamenti, documenti caricati e tutti gli altri "
+            "dati saranno conservati. Potrai riattivarla successivamente."
+        )
+
+        # Only show currently active staff.
+        removable_people = all_staff(active_only=True)
+
+        if removable_people:
+
+            remove_choices = {
+                f"{person.name} — {category_label(person.category)} (ID: {person.id})":
+                person.id
+                for person in removable_people
+            }
+
+            selected_label = st.selectbox(
+                "Select staff member / Seleziona persona",
+                list(remove_choices.keys()),
+                key="safe_staff_removal_choice"
+            )
+
+            confirm_removal = st.checkbox(
+                "I confirm that I want to remove this person "
+                "from the active staff list."
+                if language == "English"
+                else
+                "Confermo di voler rimuovere questa persona "
+                "dall'elenco del personale attivo.",
+                key="safe_staff_removal_confirmation"
+            )
+
+            if st.button(
+                "🗑️ Remove from active staff / Rimuovi dal personale attivo",
+                disabled=not confirm_removal,
+                type="primary",
+                key="safe_staff_removal_button"
+            ):
+
+                selected_id = remove_choices[selected_label]
+
+                with Session() as session:
+
+                    person = session.get(Staff, selected_id)
+
+                    if person and person.active == 1:
+
+                        # IMPORTANT: Only deactivate the staff member.
+                        # Do not delete attendance, payments or documents.
+                        person.active = 0
+
+                        session.commit()
+
+                        st.success(
+                            "Staff member successfully removed. "
+                            "All historical records are preserved."
+                            if language == "English"
+                            else
+                            "Persona rimossa correttamente. "
+                            "Tutti i dati storici sono stati conservati."
+                        )
+
+                    else:
+
+                        st.info(
+                            "This staff member is already inactive."
+                            if language == "English"
+                            else
+                            "Questa persona è già disattivata."
+                        )
+
+                st.rerun()
+
+        else:
+
+            st.info(
+                "There are no active staff members to remove."
+                if language == "English"
+                else
+                "Non ci sono persone attive da rimuovere."
+            )
+
+
+    st.divider()
+
+    with st.expander(
+        "🗑️ Remove staff member / Rimuovi una persona"
+    ):
+
+        st.warning(
+            "This removes the person from the active staff list only. "
+            "Attendance, payment history, uploaded documents and all "
+            "other records will be preserved. You can reactivate them later."
+            if language == "English"
+            else
+            "Questa operazione rimuove la persona solo dall'elenco attivo. "
+            "Presenze, pagamenti, documenti caricati e tutti gli altri "
+            "dati saranno conservati. Potrai riattivarla successivamente."
+        )
+
+        # Only show currently active staff.
+        removable_people = all_staff(active_only=True)
+
+        if removable_people:
+
+            remove_choices = {
+                f"{person.name} — {category_label(person.category)} (ID: {person.id})":
+                person.id
+                for person in removable_people
+            }
+
+            selected_label = st.selectbox(
+                "Select staff member / Seleziona persona",
+                list(remove_choices.keys()),
+                key="safe_staff_removal_choice"
+            )
+
+            confirm_removal = st.checkbox(
+                "I confirm that I want to remove this person "
+                "from the active staff list."
+                if language == "English"
+                else
+                "Confermo di voler rimuovere questa persona "
+                "dall'elenco del personale attivo.",
+                key="safe_staff_removal_confirmation"
+            )
+
+            if st.button(
+                "🗑️ Remove from active staff / Rimuovi dal personale attivo",
+                disabled=not confirm_removal,
+                type="primary",
+                key="safe_staff_removal_button"
+            ):
+
+                selected_id = remove_choices[selected_label]
+
+                with Session() as session:
+
+                    person = session.get(Staff, selected_id)
+
+                    if person and person.active == 1:
+
+                        # IMPORTANT: Only deactivate the staff member.
+                        # Do not delete attendance, payments or documents.
+                        person.active = 0
+
+                        session.commit()
+
+                        st.success(
+                            "Staff member successfully removed. "
+                            "All historical records are preserved."
+                            if language == "English"
+                            else
+                            "Persona rimossa correttamente. "
+                            "Tutti i dati storici sono stati conservati."
+                        )
+
+                    else:
+
+                        st.info(
+                            "This staff member is already inactive."
+                            if language == "English"
+                            else
+                            "Questa persona è già disattivata."
+                        )
+
+                st.rerun()
+
+        else:
+
+            st.info(
+                "There are no active staff members to remove."
+                if language == "English"
+                else
+                "Non ci sono persone attive da rimuovere."
+            )
+# ==================================================
+# SEPARATE STAFF REMOVAL SECTION
+# ==================================================
+
+    # ==================================================
+    # SEPARATE STAFF REMOVAL SECTION
+    # ==================================================
+
+    st.divider()
+
+    with st.expander(
+        "🗑️ Remove staff member / Rimuovi una persona"
+    ):
+
+        st.warning(
+            "This removes the person from the active staff list only. "
+            "Attendance, payment history, uploaded documents and all "
+            "other records will be preserved. You can reactivate them later."
+            if language == "English"
+            else
+            "Questa operazione rimuove la persona solo dall'elenco attivo. "
+            "Presenze, pagamenti, documenti caricati e tutti gli altri "
+            "dati saranno conservati. Potrai riattivarla successivamente."
+        )
+
+        # Only show currently active staff.
+        removable_people = all_staff(active_only=True)
+
+        if removable_people:
+
+            remove_choices = {
+                f"{person.name} — {category_label(person.category)} (ID: {person.id})":
+                person.id
+                for person in removable_people
+            }
+
+            selected_label = st.selectbox(
+                "Select staff member / Seleziona persona",
+                list(remove_choices.keys()),
+                key="safe_staff_removal_choice"
+            )
+
+            confirm_removal = st.checkbox(
+                "I confirm that I want to remove this person "
+                "from the active staff list."
+                if language == "English"
+                else
+                "Confermo di voler rimuovere questa persona "
+                "dall'elenco del personale attivo.",
+                key="safe_staff_removal_confirmation"
+            )
+
+            if st.button(
+                "🗑️ Remove from active staff / Rimuovi dal personale attivo",
+                disabled=not confirm_removal,
+                type="primary",
+                key="safe_staff_removal_button"
+            ):
+
+                selected_id = remove_choices[selected_label]
+
+                with Session() as session:
+
+                    person = session.get(Staff, selected_id)
+
+                    if person and person.active == 1:
+
+                        # IMPORTANT: Only deactivate the staff member.
+                        # Do not delete attendance, payments or documents.
+                        person.active = 0
+
+                        session.commit()
+
+                        st.success(
+                            "Staff member successfully removed. "
+                            "All historical records are preserved."
+                            if language == "English"
+                            else
+                            "Persona rimossa correttamente. "
+                            "Tutti i dati storici sono stati conservati."
+                        )
+
+                    else:
+
+                        st.info(
+                            "This staff member is already inactive."
+                            if language == "English"
+                            else
+                            "Questa persona è già disattivata."
+                        )
+
+                st.rerun()
+
+        else:
+
+            st.info(
+                "There are no active staff members to remove."
+                if language == "English"
+                else
+                "Non ci sono persone attive da rimuovere."
+            )
+
 # ==================================================
 # DAILY ATTENDANCE
 # ==================================================
+
 
 elif page == tr("record"):
 
