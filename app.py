@@ -387,7 +387,7 @@ Base.metadata.create_all(engine)
 # PRIVATE STAFF DOCUMENT STORAGE
 # ==================================================
 
-DOCUMENT_BUCKET = os.getenv("NEON_STORAGE_BUCKET", "uploads")
+DOCUMENT_BUCKET = os.getenv("NEON_STORAGE_BUCKET", "staff-documents")
 MAX_DOCUMENT_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_DOCUMENT_TYPES = {
     ".pdf": ("application/pdf", lambda data: data.startswith(b"%PDF-")),
