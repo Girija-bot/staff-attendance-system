@@ -507,7 +507,6 @@ with engine.begin() as connection:
 
 CATEGORIES = [
     "Officially registered",
-    "Not officially registered",
     "On-call staff",
     "Personale a chiamata full-time",
     "Personale a chiamata part-time",
@@ -517,9 +516,6 @@ CATEGORIES = [
 CATEGORY_IT = {
     "Officially registered":
         "Personale regolarmente assunto",
-
-    "Not officially registered":
-        "Personale non regolarmente registrato",
 
     "On-call staff":
         "Personale a chiamata",
@@ -2287,7 +2283,7 @@ elif page == tr("staff"):
                 else
                 "Confermo di voler rimuovere questa persona "
                 "dall'elenco del personale attivo.",
-                key="safe_staff_removal_confirmation"
+                key="safe_staff_removal_confirmation_2"
             )
 
             if st.button(
@@ -2388,7 +2384,7 @@ elif page == tr("staff"):
                 else
                 "Confermo di voler rimuovere questa persona "
                 "dall'elenco del personale attivo.",
-                key="safe_staff_removal_confirmation"
+                key="safe_staff_removal_confirmation_3"
             )
 
             if st.button(
