@@ -358,10 +358,8 @@ def render_inventory():
         "Gestione articoli, ordini con più righe, consegne e PDF."
     )
 
-    tab_magazzino, tab_acquisti, tab_ordini, tab_consegne = st.tabs([
+    tab_magazzino, tab_consegne = st.tabs([
         "Magazzino",
-        "Acquisti fornitori",
-        "Nuovo ordine",
         "Ordini e consegne"
     ])
 
@@ -378,7 +376,7 @@ def render_inventory():
             c3, c4 = st.columns(2)
 
             quantita = c3.number_input(
-                "Quantità acquistata",
+                "Quantità attualmente disponibile",
                 min_value=0.0,
                 value=0.0,
                 step=1.0
@@ -395,24 +393,11 @@ def render_inventory():
 
             ubicazione = c5.text_input("Ubicazione")
             fornitore = c6.text_input("Fornitore")
-            c7, c8 = st.columns(2)
-            costo_totale_acquisto = c7.number_input(
-                 "Costo totale di acquisto (€)", min_value=0.0, value=0.0,
+            costo_unitario = st.number_input(
+                "Costo unitario (€)", min_value=0.0, value=0.0,
                 step=0.01, format="%.2f"
             )
-            data_acquisto = c8.date_input(
-                "Data acquisto",
-                value=date.today(),
-                format="DD/MM/YYYY"
-            )
-            costo_unitario_calcolato = (
-                  costo_totale_acquisto / quantita
-                  if quantita > 0 else 0.0
-            )
-            st.info(
-                f"Costo unitario calcolato automaticamente: "
-                f"{euro(costo_unitario_calcolato)}"
-            )           
+
             salva_articolo = st.form_submit_button(
                 "Salva articolo",
                 type="primary"
@@ -421,11 +406,6 @@ def render_inventory():
         if salva_articolo:
             if not codice.strip() or not descrizione.strip():
                 st.error("Inserisci il codice e la descrizione.")
-            elif quantita > 0 and costo_totale_acquisto <= 0:
-                st.error(
-                    "Inserisci il costo totale di acquisto"
-                    "se stai registrando una quantità acquistata."
-                )    
             else:
                 with InventorySession() as session:
                     exists = session.query(Product).filter(
@@ -437,69 +417,18 @@ def render_inventory():
                             "Questo codice esiste già. Usa un codice diverso."
                         )
                     else:
-                        unit_cost = (
-                            costo_totale_acquisto / quantita
-                            if quantita > 0 else 0.0
-                        )
-                        product = Product(
+                        session.add(Product(
                             code=codice.strip(),
                             description=descrizione.strip(),
                             quantity=quantita,
                             min_quantity=minimo,
                             location=ubicazione.strip(),
                             supplier=fornitore.strip(),
-                            unit_cost=unit_cost
-                        )
-                        session.add(Product)
-                        session.flush()
-
-                        if quantita > 0:
-                            purchase = Purchase(
-                                product_id=product.id,
-                                product_code=product.code,
-                                description=product.description,
-                                supplier=fornitore.strip() or "Non specificato",
-                                purchase_date=data_acquisto,
-                                quantity=quantita,
-                                unit_cost=unit_cost,
-                                total_cost=costo_totale_acquisto,
-                                notes="Acquisto registrato dalla sezione Magazzino"
-                            )
-                            session.add(purchase)
-                            session.flush()
-
-                            session.add(StockMovement(
-                                product_id=product.id,
-                                product_code=product.code,
-                                description=product.description,
-                                movement_date=data_acquisto,
-                                movement_type="CARICO",
-                                quantity=quantita,
-                                destination="Magazzino",
-                                reference=f"Acquisto #{purchase.id}",
-                                unit_cost=unit_cost,
-                                notes=f"Fornitore: {fornitore.strip()}"
-                            ))
-
-                            session.add(Expense(
-                                expense_date=data_acquisto,
-                                category="Acquisto magazzino",
-                                description=(
-                                    f"Acquisto {product.description} "
-                                    f"({quantita:g} unità)"
-                            ),
-                            supplier=fornitore.strip(),
-                                amount=costo_totale_acquisto,
-                                payment_method="",
-                                notes="Acquisto registrato dalla sezione Magazzino",
-                                purchase_id=purchase.id
-                            ))
+                            unit_cost=costo_unitario
+                        ))
 
                         session.commit()
-                        st.success(
-                            f"Articolo salvato."
-                            f"Quantità in magazzino: {quantita:g}."
-                            )
+                        st.success("Articolo salvato.")
                         st.rerun()
 
         st.divider()
@@ -669,334 +598,6 @@ def render_inventory():
         else:
             st.info("Nessun articolo registrato.")
                 # --------------------------------------------------
-    # SUPPLIER PURCHASES: HISTORY, COSTS AND STOCK INCREASE
-    # --------------------------------------------------
-    with tab_acquisti:
-        st.subheader("Registra acquisto da fornitore")
-        st.caption(
-            "Ogni acquisto aumenta la giacenza e salva fornitore, data, quantità "
-            "e costo. Il costo unitario è calcolato automaticamente."
-        )
-
-        with InventorySession() as session:
-            purchase_products = load_products(session)
-            purchase_options = {
-                f"{p.code} — {p.description}": p.id for p in purchase_products
-            }
-
-        with st.form("supplier_purchase_form", clear_on_submit=True):
-            product_choice = st.selectbox(
-                "Articolo in magazzino", ["Nuovo articolo / non in catalogo"] + list(purchase_options)
-            )
-            pc1, pc2 = st.columns(2)
-            purchase_supplier = pc1.text_input("Fornitore / Azienda *")
-            purchase_date = pc2.date_input("Data acquisto", value=date.today(), format="DD/MM/YYYY")
-            if product_choice == "Nuovo articolo / non in catalogo":
-                pc3, pc4 = st.columns(2)
-                purchase_code = pc3.text_input("Codice articolo")
-                purchase_description = pc4.text_input("Descrizione articolo *")
-            else:
-                purchase_product_id = purchase_options[product_choice]
-                selected_purchase_product = next(p for p in purchase_products if p.id == purchase_product_id)
-                purchase_code = selected_purchase_product.code
-                purchase_description = selected_purchase_product.description
-                st.caption(f"Codice: {purchase_code} · {purchase_description}")
-            pc5, pc6 = st.columns(2)
-            purchase_quantity = pc5.number_input("Quantità acquistata", min_value=0.01, value=1.0, step=1.0)
-            purchase_total = pc6.number_input("Costo totale acquisto (€)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
-            purchase_notes = st.text_area("Note / fattura / riferimento")
-            save_purchase = st.form_submit_button("Registra acquisto", type="primary")
-
-        if save_purchase:
-            if not purchase_supplier.strip() or not str(purchase_description).strip():
-                st.error("Inserisci fornitore e descrizione articolo.")
-            elif purchase_total <= 0:
-                st.error("Il costo totale deve essere maggiore di zero.")
-            else:
-                calculated_unit_cost = purchase_total / purchase_quantity
-                with InventorySession() as session:
-                    product = None
-                    if product_choice != "Nuovo articolo / non in catalogo":
-                        product = session.get(Product, purchase_product_id)
-                    elif purchase_code.strip():
-                        product = session.query(Product).filter(
-                            func.lower(Product.code) == purchase_code.strip().lower()
-                        ).first()
-                    if product is None:
-                        generated_code = purchase_code.strip() or f"ACQ-{uuid.uuid4().hex[:8].upper()}"
-                        product = Product(
-                            code=generated_code,
-                            description=purchase_description.strip(),
-                            quantity=0,
-                            min_quantity=0,
-                            location="",
-                            supplier=purchase_supplier.strip(),
-                            unit_cost=calculated_unit_cost
-                        )
-                        session.add(product)
-                        session.flush()
-                    product.quantity = float(product.quantity or 0) + float(purchase_quantity)
-                    product.supplier = purchase_supplier.strip()
-                    product.unit_cost = calculated_unit_cost
-                    purchase = Purchase(
-                        product_id=product.id,
-                        product_code=product.code,
-                        description=product.description,
-                        supplier=purchase_supplier.strip(),
-                        purchase_date=purchase_date,
-                        quantity=float(purchase_quantity),
-                        unit_cost=calculated_unit_cost,
-                        total_cost=float(purchase_total),
-                        notes=purchase_notes.strip()
-                    )
-                    session.add(purchase)
-                    session.flush()
-                    session.add(Expense(
-                        expense_date=purchase_date,
-                        category="Acquisto magazzino",
-                        description=f"Acquisto {product.description} ({purchase_quantity:g} unità)",
-                        supplier=purchase_supplier.strip(),
-                        amount=float(purchase_total),
-                        payment_method="",
-                        notes=purchase_notes.strip(),
-                        purchase_id=purchase.id
-                    ))
-                    session.add(StockMovement(
-                        product_id=product.id,
-                        product_code=product.code,
-                        description=product.description,
-                        movement_date=purchase_date,
-                        movement_type="CARICO",
-                        quantity=float(purchase_quantity),
-                        destination="Magazzino",
-                        reference=f"Acquisto #{purchase.id}",
-                        unit_cost=calculated_unit_cost,
-                        notes=f"Fornitore: {purchase_supplier.strip()}"
-                    ))
-                    session.commit()
-                st.success(
-                    f"Acquisto registrato. Costo unitario: {euro(calculated_unit_cost)}. "
-                    f"Nuova giacenza: {product.quantity:g}."
-                )
-                st.rerun()
-
-        st.divider()
-        st.subheader("Storico acquisti e confronto fornitori")
-        with InventorySession() as session:
-            purchases = session.query(Purchase).order_by(
-                Purchase.purchase_date.desc(), Purchase.id.desc()
-            ).all()
-            purchase_rows = [{
-                "Data": p.purchase_date.strftime("%d/%m/%Y"),
-                "Codice": p.product_code,
-                "Articolo": p.description,
-                "Fornitore": p.supplier,
-                "Quantità": p.quantity,
-                "Costo unitario (€)": round(p.unit_cost, 2),
-                "Costo totale (€)": round(p.total_cost, 2),
-                "Note": p.notes
-            } for p in purchases]
-        if purchase_rows:
-            st.dataframe(pd.DataFrame(purchase_rows), use_container_width=True, hide_index=True)
-            purchase_df = pd.DataFrame(purchase_rows)
-            st.download_button(
-                "Scarica storico acquisti CSV",
-                purchase_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name="storico_acquisti.csv",
-                mime="text/csv"
-            )
-            compare_products = sorted({p["Articolo"] for p in purchase_rows})
-            compare_item = st.selectbox("Confronta prezzi per articolo", compare_products, key="compare_purchase_item")
-            compare_df = pd.DataFrame(purchase_rows)
-            compare_df = compare_df[compare_df["Articolo"] == compare_item].sort_values("Costo unitario (€)")
-            st.dataframe(compare_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("Nessun acquisto registrato.")
-
-    # --------------------------------------------------
-    # NEW ORDER: ONE ORDER WITH MULTIPLE ITEMS
-    # --------------------------------------------------
-
-    with tab_ordini:
-        st.subheader("Crea un ordine con più articoli")
-        st.caption(
-            "Inserisci una volta i dati dell'ordine e aggiungi tutte le righe "
-            "della lista sullo stesso documento."
-        )
-
-        item_count = st.number_input(
-            "Quanti articoli contiene questo ordine?",
-            min_value=1, max_value=40, value=1, step=1,
-            key="new_order_item_count"
-        )
-
-        with InventorySession() as session:
-            catalog_products = load_products(session)
-            catalog_options = {
-                f"{p.code} — {p.description}": p.id for p in catalog_products
-            }
-            catalog_lookup = {
-                p.id: (p.code, p.description) for p in catalog_products
-            }
-
-        with st.form("nuovo_ordine_multi", clear_on_submit=True):
-            c1, c2 = st.columns(2)
-            numero = c1.text_input(
-                "Numero ordine *", value=f"ORD-{date.today():%Y%m%d}"
-            )
-            data_ordine = c2.date_input(
-                "Data ordine", value=date.today(), format="DD/MM/YYYY"
-            )
-            c3, c4 = st.columns(2)
-            cliente = c3.text_input("Destinatario / Cliente *")
-            destinazione = c4.text_input("Indirizzo di destinazione")
-            pagamento = st.selectbox(
-                "Modalità di pagamento",
-                ["Bonifico", "Contanti", "Carta", "Altro"]
-            )
-            note = st.text_area("Note")
-
-            st.markdown("### Articoli dell'ordine")
-            submitted_items = []
-            for i in range(int(item_count)):
-                st.markdown(f"**Articolo {i + 1}**")
-                if catalog_options:
-                    mode = st.radio(
-                        f"Origine articolo {i + 1}",
-                        ["Inserisci manualmente", "Scegli dal magazzino"],
-                        horizontal=True, key=f"new_mode_{i}"
-                    )
-                else:
-                    mode = "Inserisci manualmente"
-
-                product_id = None
-                code_value = ""
-                description_value = ""
-                if mode == "Scegli dal magazzino":
-                    chosen = st.selectbox(
-                        f"Articolo in catalogo {i + 1}",
-                        list(catalog_options.keys()), key=f"new_catalog_{i}"
-                    )
-                    product_id = catalog_options[chosen]
-                    code_value, description_value = catalog_lookup[product_id]
-                    st.caption(f"Codice: {code_value} | {description_value}")
-                else:
-                    ic1, ic2 = st.columns(2)
-                    code_value = ic1.text_input(
-                        f"Codice articolo {i + 1}", key=f"new_code_{i}"
-                    )
-                    description_value = ic2.text_input(
-                        f"Descrizione articolo {i + 1} *", key=f"new_desc_{i}"
-                    )
-
-                iq1, iq2, iq3 = st.columns(3)
-                qty = iq1.number_input(
-                    f"Quantità ordinata {i + 1}", min_value=0.01,
-                    value=1.0, step=1.0, key=f"new_qty_{i}"
-                )
-                price = iq2.number_input(
-                    f"Prezzo unitario € {i + 1}", min_value=0.0,
-                    value=0.0, step=0.01, key=f"new_price_{i}"
-                )
-                discount = iq3.number_input(
-                    f"Sconto % {i + 1}", min_value=0.0, max_value=100.0,
-                    value=0.0, step=1.0, key=f"new_discount_{i}"
-                )
-                iv1, iv2 = st.columns(2)
-                vat = iv1.selectbox(
-                    f"Aliquota IVA % {i + 1}",
-                    [22.0, 10.0, 5.0, 4.0, 0.0], key=f"new_vat_{i}"
-                )
-                delivered = iv2.number_input(
-                    f"Quantità già consegnata {i + 1}",
-                    min_value=0.0, value=0.0, step=1.0,
-                    key=f"new_delivered_{i}"
-                )
-                submitted_items.append({
-                    "product_id": product_id, "code": code_value,
-                    "description": description_value, "quantity": qty,
-                    "price": price, "discount": discount,
-                    "vat": vat, "delivered": delivered
-                })
-                if i < int(item_count) - 1:
-                    st.divider()
-
-            create_order = st.form_submit_button(
-                "Salva ordine completo", type="primary"
-            )
-
-        if create_order:
-            if not numero.strip() or not cliente.strip():
-                st.error("Numero ordine e destinatario sono obbligatori.")
-            elif any(not item["description"].strip() for item in submitted_items):
-                st.error(
-                    "Completa la descrizione di ogni articolo "
-                    "(oppure selezionalo dal magazzino)."
-                )
-            elif any(item["delivered"] > item["quantity"] for item in submitted_items):
-                st.error("La quantità consegnata non può superare quella ordinata.")
-            else:
-                with InventorySession() as session:
-                    duplicate = session.query(Order).filter_by(
-                        order_number=numero.strip()
-                    ).first()
-                    if duplicate:
-                        st.error("Questo numero ordine esiste già.")
-                    else:
-                        order = Order(
-                            order_number=numero.strip(),
-                            order_date=data_ordine,
-                            customer=cliente.strip(),
-                            destination=destinazione.strip(),
-                            payment_method=pagamento,
-                            notes=note.strip()
-                        )
-                        stock_error = None
-                        for item in submitted_items:
-                            order.lines.append(OrderLine(
-                                product_id=item["product_id"],
-                                code=item["code"].strip(),
-                                description=item["description"].strip(),
-                                quantity_ordered=item["quantity"],
-                                quantity_delivered=item["delivered"],
-                                unit_price=item["price"],
-                                discount_percent=item["discount"],
-                                vat_percent=item["vat"]
-                            ))
-                            if item["product_id"] and item["delivered"] > 0:
-                                product = session.get(Product, item["product_id"])
-                                available = float(product.quantity or 0) if product else 0.0
-                                if not product or float(item["delivered"]) > available:
-                                    stock_error = (
-                                        f"Giacenza insufficiente per {item['description']}: "
-                                        f"disponibili {available:g}, consegnati {float(item['delivered']):g}."
-                                    )
-                                    break
-                                product.quantity = available - float(item["delivered"])
-                                session.add(StockMovement(
-                                    product_id=product.id,
-                                    product_code=product.code,
-                                    description=product.description,
-                                    movement_date=data_ordine,
-                                    movement_type="SCARICO",
-                                    quantity=float(item["delivered"]),
-                                    destination=destinazione.strip() or cliente.strip(),
-                                    reference=f"Ordine {numero.strip()}",
-                                    unit_cost=float(product.unit_cost or 0),
-                                    notes="Scarico automatico per quantità già consegnata all'apertura dell'ordine"
-                                ))
-                        if stock_error:
-                            session.rollback()
-                            st.error(stock_error)
-                        else:
-                            session.add(order)
-                            session.commit()
-                            st.success(
-                                f"Ordine salvato con {len(submitted_items)} articoli."
-                            )
-                            st.rerun()
-
-    # --------------------------------------------------
     # REGISTERED ORDERS: VIEW / EDIT / DELETE / DELIVERY / PDF
     # --------------------------------------------------
     with tab_consegne:
@@ -1008,60 +609,16 @@ def render_inventory():
             ).all()
             order_choices = {order_label(o): o.id for o in orders}
             order_rows = []
-            product_demand = {}
-
             for o in orders:
-                for line in o.lines:
-                    remaining = max(
-                        0.0,
-                        float(line.quantity_ordered or 0)
-                        - float(line.quantity_delivered or 0)
+                _, _, total = order_totals(o)
+                for index, line in enumerate(o.lines, start=1):
+                    linked_product = session.get(Product, line.product_id) if line.product_id else None
+                    available_stock = float(linked_product.quantity or 0) if linked_product else None
+                    remaining_delivery = max(0, line.quantity_ordered - line.quantity_delivered)
+                    quantity_to_buy = (
+                        max(0, remaining_delivery - available_stock)
+                        if available_stock is not None else None
                     )
-
-                    if line.product_id and remaining > 0:
-                        product_id = line.product_id
-
-                        if product_id not in product_demand:
-                            product_demand[product_id] = {
-                                "code": line.code,
-                                "description": line.description,
-                                "remaining": 0.0
-                            }
-                        product_demand[product_id]["remaining"] += remaining
-                # Calculate shortage once per product, not once per order.
-                shortage_rows = []
-
-                for product_id, demand in product_demand.items():
-                    product = session.get(Product, product_id)
-                    available = (
-                        float(product.quantity or 0)
-                        if product else 0.0
-                    )
-                    total_remaining = demand["remaining"]
-                    to_buy = max(0.0, total_remaining - available)
-                    shortage_rows.append({
-                        "Codice": demand["code"],
-                    "Articolo": demand["description"],
-                    "Totale ancora da fornire": total_remaining,
-                    "Giacenza disponibile": available,
-                    "Da acquistare": to_buy
-                })
-                for o in orders:
-                    _, _, total = order_totals(o)
-                    for index, line in enumerate(o.lines, start=1):
-                        remaining_delivery = max(
-                         0.0,
-                        float(line.quantity_ordered or 0)
-                        - float(line.quantity_delivered or 0)
-                    )
-                    linked_product = (
-                        session.get(Product, line.product_id)
-                        if line.product_id else None
-                    )
-                    available_stock = (
-                       float(linked_product.quantity or 0)
-                        if linked_product else None 
-                    )  
                     order_rows.append({
                         "Ordine": o.order_number,
                         "Data": o.order_date.strftime("%d/%m/%Y"),
@@ -1071,47 +628,20 @@ def render_inventory():
                         "Articolo": line.description,
                         "Quantità ordinata": line.quantity_ordered,
                         "Quantità consegnata": line.quantity_delivered,
-                        "Da fornire": remaining_delivery,
-                        "Giacenza magazzino": available_stock,
+                        "Da consegnare": remaining_delivery,
+                        "Giacenza disponibile": available_stock,
+                        "Da acquistare": quantity_to_buy,
                         "Totale ordine": euro(total)
                     })
 
         if order_rows:
-            st.subheader("Riepilogo acquisti necessari")
-
-            if shortage_rows:
-                shortage_df = pd.DataFrame(shortage_rows)
-
-                st.dataframe(
-                    shortage_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-                total_to_buy = float(
-                    shortage_df["Da acquistare"].sum()
-                )
-
-                st.metric(
-                    "Totale quantità da acquistare",
-                    f"{total_to_buy:g} articoli"
-                )
-            else:
-                st.success(
-                    "Non ci sono quantità da acquistare "
-                    "per gli ordini collegati al magazzino."
-                )
-
-            st.divider()
-            st.subheader("Dettaglio ordini per cliente")
-        
             st.dataframe(
                 pd.DataFrame(order_rows),
                 use_container_width=True, hide_index=True
             )
 
             st.divider()
-            st.subheader("Dettaglio ordini per cliente")
+            st.subheader("Modifica o elimina un ordine")
             selected_order_label = st.selectbox(
                 "Seleziona ordine (data — destinatario — numero ordine)",
                 list(order_choices.keys()), key="manage_order_choice"
@@ -1527,11 +1057,29 @@ def render_stock_outflow():
         if not options:
             st.info("Nessun articolo in magazzino.")
         else:
+            product_lookup = {p.id: p for p in products}
+
             with st.form("manual_stock_out_form", clear_on_submit=True):
                 selected_label = st.selectbox("Articolo", list(options))
+                default_unit_cost = float(
+                    product_lookup[options[selected_label]].unit_cost or 0
+                )
                 c1, c2 = st.columns(2)
                 out_quantity = c1.number_input("Quantità da scaricare", min_value=0.01, value=1.0, step=1.0)
                 out_date = c2.date_input("Data scarico", value=date.today(), format="DD/MM/YYYY")
+                out_unit_cost = st.number_input(
+                    "Costo unitario (€)",
+                    min_value=0.0,
+                    value=default_unit_cost,
+                    step=0.01,
+                    format="%.2f",
+                    help="Il totale viene calcolato automaticamente: quantità × costo unitario."
+                )
+                computed_total = float(out_quantity) * float(out_unit_cost)
+                st.info(
+                    f"Totale scarico: {euro(computed_total)} "
+                    f"({float(out_quantity):g} × {euro(float(out_unit_cost))})"
+                )
                 out_destination = st.text_input("Destinazione / Reparto / Persona")
                 out_reference = st.text_input("Riferimento (ordine, richiesta, documento)")
                 out_notes = st.text_area("Note")
@@ -1544,6 +1092,7 @@ def render_stock_outflow():
                         st.error("Giacenza insufficiente: scarico non registrato.")
                     else:
                         product.quantity = float(product.quantity or 0) - float(out_quantity)
+                        product.unit_cost = float(out_unit_cost)
                         session.add(StockMovement(
                             product_id=product.id,
                             product_code=product.code,
@@ -1553,7 +1102,7 @@ def render_stock_outflow():
                             quantity=float(out_quantity),
                             destination=out_destination.strip(),
                             reference=out_reference.strip(),
-                            unit_cost=float(product.unit_cost or 0),
+                            unit_cost=float(out_unit_cost),
                             notes=out_notes.strip()
                         ))
                         session.commit()
@@ -1577,6 +1126,10 @@ def render_stock_outflow():
         } for m in movements]
     if rows:
         df = pd.DataFrame(rows)
+        st.metric(
+            "Valore totale scarichi",
+            euro(float(df["Valore scarico (€)"].sum()))
+        )
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.download_button("Scarica scarichi CSV", df.to_csv(index=False).encode("utf-8-sig"), file_name="elenco_scarico_magazzino.csv", mime="text/csv")
     else:
