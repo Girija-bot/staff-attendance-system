@@ -2182,7 +2182,7 @@ elif page == tr("staff"):
             selected_label = st.selectbox(
                 "Select staff member / Seleziona persona",
                 list(remove_choices.keys()),
-                key="safe_staff_removal_choice"
+                key="safe_staff_removal_choice_2"
             )
 
             confirm_removal = st.checkbox(
@@ -2276,8 +2276,8 @@ elif page == tr("staff"):
 
             selected_label = st.selectbox(
                 "Select staff member / Seleziona persona",
-                list(remove_choices.keys()),
-                key="safe_staff_removal_choice"
+                 list(remove_choices.keys()),
+                 key="safe_staff_removal_choice_3"
             )
 
             confirm_removal = st.checkbox(
@@ -2294,7 +2294,7 @@ elif page == tr("staff"):
                 "🗑️ Remove from active staff / Rimuovi dal personale attivo",
                 disabled=not confirm_removal,
                 type="primary",
-                key="safe_staff_removal_button"
+                key="safe_staff_removal_button_2"
             ):
 
                 selected_id = remove_choices[selected_label]
@@ -2395,7 +2395,7 @@ elif page == tr("staff"):
                 "🗑️ Remove from active staff / Rimuovi dal personale attivo",
                 disabled=not confirm_removal,
                 type="primary",
-                key="safe_staff_removal_button"
+                key="safe_staff_removal_button_3"
             ):
 
                 selected_id = remove_choices[selected_label]
