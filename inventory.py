@@ -1,4 +1,5 @@
 import os
+import uuid
 from io import BytesIO
 from datetime import date, datetime
 from xml.sax.saxutils import escape
@@ -61,6 +62,7 @@ class Product(InventoryBase):
     min_quantity: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     location: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     supplier: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, nullable=False
     )
@@ -120,7 +122,67 @@ class OrderLine(InventoryBase):
     order: Mapped["Order"] = relationship(back_populates="lines")
 
 
+class Purchase(InventoryBase):
+    __tablename__ = "inventory_purchases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_products.id", ondelete="SET NULL"), nullable=True
+    )
+    product_code: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+    supplier: Mapped[str] = mapped_column(String(200), nullable=False)
+    purchase_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    total_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class Expense(InventoryBase):
+    __tablename__ = "inventory_expenses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    expense_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
+    category: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+    supplier: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    purchase_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_purchases.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class StockMovement(InventoryBase):
+    __tablename__ = "inventory_stock_movements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_products.id", ondelete="SET NULL"), nullable=True
+    )
+    product_code: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+    movement_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
+    movement_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    destination: Mapped[str] = mapped_column(String(250), default="", nullable=False)
+    reference: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+
 InventoryBase.metadata.create_all(engine)
+
+# Safe additive migration for existing inventory databases.
+from sqlalchemy import inspect, text as sql_text
+if "unit_cost" not in {c["name"] for c in inspect(engine).get_columns("inventory_products")}:
+    with engine.begin() as connection:
+        connection.execute(sql_text(
+            "ALTER TABLE inventory_products ADD COLUMN unit_cost FLOAT NOT NULL DEFAULT 0"
+        ))
 
 
 # UTILITY FUNCTIONS
@@ -296,8 +358,9 @@ def render_inventory():
         "Gestione articoli, ordini con più righe, consegne e PDF."
     )
 
-    tab_magazzino, tab_ordini, tab_consegne = st.tabs([
+    tab_magazzino, tab_acquisti, tab_ordini, tab_consegne = st.tabs([
         "Magazzino",
+        "Acquisti fornitori",
         "Nuovo ordine",
         "Ordini e consegne"
     ])
@@ -332,6 +395,10 @@ def render_inventory():
 
             ubicazione = c5.text_input("Ubicazione")
             fornitore = c6.text_input("Fornitore")
+            costo_unitario = st.number_input(
+                "Costo unitario (€)", min_value=0.0, value=0.0,
+                step=0.01, format="%.2f"
+            )
 
             salva_articolo = st.form_submit_button(
                 "Salva articolo",
@@ -358,7 +425,8 @@ def render_inventory():
                             quantity=quantita,
                             min_quantity=minimo,
                             location=ubicazione.strip(),
-                            supplier=fornitore.strip()
+                            supplier=fornitore.strip(),
+                            unit_cost=costo_unitario
                         ))
 
                         session.commit()
@@ -378,7 +446,8 @@ def render_inventory():
                 "Giacenza": p.quantity,
                 "Scorta minima": p.min_quantity,
                 "Ubicazione": p.location,
-                "Fornitore": p.supplier
+                "Fornitore": p.supplier,
+                "Ultimo costo unitario (€)": round(float(p.unit_cost or 0), 2)
             } for p in products]
 
             product_choices = {
@@ -457,6 +526,12 @@ def render_inventory():
                         "Fornitore",
                         value=selected_product.supplier or ""
                     )
+                    edit_unit_cost = st.number_input(
+                        "Ultimo costo unitario (€)", min_value=0.0,
+                        value=float(selected_product.unit_cost or 0),
+                        step=0.01, format="%.2f",
+                        key=f"edit_unit_cost_{selected_product_id}"
+                    )
 
                     save_product_changes = st.form_submit_button(
                         "Salva modifiche articolo",
@@ -483,6 +558,7 @@ def render_inventory():
                             selected_product.min_quantity = edit_minimum
                             selected_product.location = edit_location.strip()
                             selected_product.supplier = edit_supplier.strip()
+                            selected_product.unit_cost = edit_unit_cost
 
                             session.commit()
                             st.success("Articolo modificato.")
@@ -524,8 +600,154 @@ def render_inventory():
         else:
             st.info("Nessun articolo registrato.")
                 # --------------------------------------------------
-    # CREATE ONE ORDER WITH MULTIPLE ITEMS
+    # SUPPLIER PURCHASES: HISTORY, COSTS AND STOCK INCREASE
     # --------------------------------------------------
+    with tab_acquisti:
+        st.subheader("Registra acquisto da fornitore")
+        st.caption(
+            "Ogni acquisto aumenta la giacenza e salva fornitore, data, quantità "
+            "e costo. Il costo unitario è calcolato automaticamente."
+        )
+
+        with InventorySession() as session:
+            purchase_products = load_products(session)
+            purchase_options = {
+                f"{p.code} — {p.description}": p.id for p in purchase_products
+            }
+
+        with st.form("supplier_purchase_form", clear_on_submit=True):
+            product_choice = st.selectbox(
+                "Articolo in magazzino", ["Nuovo articolo / non in catalogo"] + list(purchase_options)
+            )
+            pc1, pc2 = st.columns(2)
+            purchase_supplier = pc1.text_input("Fornitore / Azienda *")
+            purchase_date = pc2.date_input("Data acquisto", value=date.today(), format="DD/MM/YYYY")
+            if product_choice == "Nuovo articolo / non in catalogo":
+                pc3, pc4 = st.columns(2)
+                purchase_code = pc3.text_input("Codice articolo")
+                purchase_description = pc4.text_input("Descrizione articolo *")
+            else:
+                purchase_product_id = purchase_options[product_choice]
+                selected_purchase_product = next(p for p in purchase_products if p.id == purchase_product_id)
+                purchase_code = selected_purchase_product.code
+                purchase_description = selected_purchase_product.description
+                st.caption(f"Codice: {purchase_code} · {purchase_description}")
+            pc5, pc6 = st.columns(2)
+            purchase_quantity = pc5.number_input("Quantità acquistata", min_value=0.01, value=1.0, step=1.0)
+            purchase_total = pc6.number_input("Costo totale acquisto (€)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+            purchase_notes = st.text_area("Note / fattura / riferimento")
+            save_purchase = st.form_submit_button("Registra acquisto", type="primary")
+
+        if save_purchase:
+            if not purchase_supplier.strip() or not str(purchase_description).strip():
+                st.error("Inserisci fornitore e descrizione articolo.")
+            elif purchase_total <= 0:
+                st.error("Il costo totale deve essere maggiore di zero.")
+            else:
+                calculated_unit_cost = purchase_total / purchase_quantity
+                with InventorySession() as session:
+                    product = None
+                    if product_choice != "Nuovo articolo / non in catalogo":
+                        product = session.get(Product, purchase_product_id)
+                    elif purchase_code.strip():
+                        product = session.query(Product).filter(
+                            func.lower(Product.code) == purchase_code.strip().lower()
+                        ).first()
+                    if product is None:
+                        generated_code = purchase_code.strip() or f"ACQ-{uuid.uuid4().hex[:8].upper()}"
+                        product = Product(
+                            code=generated_code,
+                            description=purchase_description.strip(),
+                            quantity=0,
+                            min_quantity=0,
+                            location="",
+                            supplier=purchase_supplier.strip(),
+                            unit_cost=calculated_unit_cost
+                        )
+                        session.add(product)
+                        session.flush()
+                    product.quantity = float(product.quantity or 0) + float(purchase_quantity)
+                    product.supplier = purchase_supplier.strip()
+                    product.unit_cost = calculated_unit_cost
+                    purchase = Purchase(
+                        product_id=product.id,
+                        product_code=product.code,
+                        description=product.description,
+                        supplier=purchase_supplier.strip(),
+                        purchase_date=purchase_date,
+                        quantity=float(purchase_quantity),
+                        unit_cost=calculated_unit_cost,
+                        total_cost=float(purchase_total),
+                        notes=purchase_notes.strip()
+                    )
+                    session.add(purchase)
+                    session.flush()
+                    session.add(Expense(
+                        expense_date=purchase_date,
+                        category="Acquisto magazzino",
+                        description=f"Acquisto {product.description} ({purchase_quantity:g} unità)",
+                        supplier=purchase_supplier.strip(),
+                        amount=float(purchase_total),
+                        payment_method="",
+                        notes=purchase_notes.strip(),
+                        purchase_id=purchase.id
+                    ))
+                    session.add(StockMovement(
+                        product_id=product.id,
+                        product_code=product.code,
+                        description=product.description,
+                        movement_date=purchase_date,
+                        movement_type="CARICO",
+                        quantity=float(purchase_quantity),
+                        destination="Magazzino",
+                        reference=f"Acquisto #{purchase.id}",
+                        unit_cost=calculated_unit_cost,
+                        notes=f"Fornitore: {purchase_supplier.strip()}"
+                    ))
+                    session.commit()
+                st.success(
+                    f"Acquisto registrato. Costo unitario: {euro(calculated_unit_cost)}. "
+                    f"Nuova giacenza: {product.quantity:g}."
+                )
+                st.rerun()
+
+        st.divider()
+        st.subheader("Storico acquisti e confronto fornitori")
+        with InventorySession() as session:
+            purchases = session.query(Purchase).order_by(
+                Purchase.purchase_date.desc(), Purchase.id.desc()
+            ).all()
+            purchase_rows = [{
+                "Data": p.purchase_date.strftime("%d/%m/%Y"),
+                "Codice": p.product_code,
+                "Articolo": p.description,
+                "Fornitore": p.supplier,
+                "Quantità": p.quantity,
+                "Costo unitario (€)": round(p.unit_cost, 2),
+                "Costo totale (€)": round(p.total_cost, 2),
+                "Note": p.notes
+            } for p in purchases]
+        if purchase_rows:
+            st.dataframe(pd.DataFrame(purchase_rows), use_container_width=True, hide_index=True)
+            purchase_df = pd.DataFrame(purchase_rows)
+            st.download_button(
+                "Scarica storico acquisti CSV",
+                purchase_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="storico_acquisti.csv",
+                mime="text/csv"
+            )
+            compare_products = sorted({p["Articolo"] for p in purchase_rows})
+            compare_item = st.selectbox("Confronta prezzi per articolo", compare_products, key="compare_purchase_item")
+            compare_df = pd.DataFrame(purchase_rows)
+            compare_df = compare_df[compare_df["Articolo"] == compare_item].sort_values("Costo unitario (€)")
+            st.dataframe(compare_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nessun acquisto registrato.")
+
+    # --------------------------------------------------
+    # NEW ORDER: ONE ORDER WITH MULTIPLE ITEMS
+    # --------------------------------------------------
+
     with tab_ordini:
         st.subheader("Crea un ordine con più articoli")
         st.caption(
@@ -660,6 +882,7 @@ def render_inventory():
                             payment_method=pagamento,
                             notes=note.strip()
                         )
+                        stock_error = None
                         for item in submitted_items:
                             order.lines.append(OrderLine(
                                 product_id=item["product_id"],
@@ -671,12 +894,38 @@ def render_inventory():
                                 discount_percent=item["discount"],
                                 vat_percent=item["vat"]
                             ))
-                        session.add(order)
-                        session.commit()
-                        st.success(
-                            f"Ordine salvato con {len(submitted_items)} articoli."
-                        )
-                        st.rerun()
+                            if item["product_id"] and item["delivered"] > 0:
+                                product = session.get(Product, item["product_id"])
+                                available = float(product.quantity or 0) if product else 0.0
+                                if not product or float(item["delivered"]) > available:
+                                    stock_error = (
+                                        f"Giacenza insufficiente per {item['description']}: "
+                                        f"disponibili {available:g}, consegnati {float(item['delivered']):g}."
+                                    )
+                                    break
+                                product.quantity = available - float(item["delivered"])
+                                session.add(StockMovement(
+                                    product_id=product.id,
+                                    product_code=product.code,
+                                    description=product.description,
+                                    movement_date=data_ordine,
+                                    movement_type="SCARICO",
+                                    quantity=float(item["delivered"]),
+                                    destination=destinazione.strip() or cliente.strip(),
+                                    reference=f"Ordine {numero.strip()}",
+                                    unit_cost=float(product.unit_cost or 0),
+                                    notes="Scarico automatico per quantità già consegnata all'apertura dell'ordine"
+                                ))
+                        if stock_error:
+                            session.rollback()
+                            st.error(stock_error)
+                        else:
+                            session.add(order)
+                            session.commit()
+                            st.success(
+                                f"Ordine salvato con {len(submitted_items)} articoli."
+                            )
+                            st.rerun()
 
     # --------------------------------------------------
     # REGISTERED ORDERS: VIEW / EDIT / DELETE / DELIVERY / PDF
@@ -693,6 +942,13 @@ def render_inventory():
             for o in orders:
                 _, _, total = order_totals(o)
                 for index, line in enumerate(o.lines, start=1):
+                    linked_product = session.get(Product, line.product_id) if line.product_id else None
+                    available_stock = float(linked_product.quantity or 0) if linked_product else None
+                    remaining_delivery = max(0, line.quantity_ordered - line.quantity_delivered)
+                    quantity_to_buy = (
+                        max(0, remaining_delivery - available_stock)
+                        if available_stock is not None else None
+                    )
                     order_rows.append({
                         "Ordine": o.order_number,
                         "Data": o.order_date.strftime("%d/%m/%Y"),
@@ -702,9 +958,9 @@ def render_inventory():
                         "Articolo": line.description,
                         "Quantità ordinata": line.quantity_ordered,
                         "Quantità consegnata": line.quantity_delivered,
-                        "Da consegnare": max(
-                            0, line.quantity_ordered - line.quantity_delivered
-                        ),
+                        "Da consegnare": remaining_delivery,
+                        "Giacenza disponibile": available_stock,
+                        "Da acquistare": quantity_to_buy,
                         "Totale ordine": euro(total)
                     })
 
@@ -859,29 +1115,79 @@ def render_inventory():
                         order_to_edit.payment_method = edit_payment
                         order_to_edit.notes = edit_notes.strip()
 
-                        # Update existing lines, add new ones, remove extras.
+                        # Reconcile stock for changes to already-delivered quantities.
+                        stock_error = None
                         for i, item in enumerate(edited_items):
                             if i < len(old_lines):
-                                line = old_lines[i]
-                            else:
-                                line = OrderLine()
-                                order_to_edit.lines.append(line)
+                                previous_line = old_lines[i]
+                                delta = float(item["delivered"]) - float(previous_line.quantity_delivered or 0)
+                                product = session.get(Product, previous_line.product_id) if previous_line.product_id else None
+                                if product and abs(delta) > 0:
+                                    if delta > 0 and float(product.quantity or 0) < delta:
+                                        stock_error = (
+                                            f"Giacenza insufficiente per {product.description}: "
+                                            f"disponibili {float(product.quantity or 0):g}, richiesti {delta:g}."
+                                        )
+                                        break
+                                    product.quantity = float(product.quantity or 0) - delta
+                                    session.add(StockMovement(
+                                        product_id=product.id,
+                                        product_code=product.code,
+                                        description=product.description,
+                                        movement_date=date.today(),
+                                        movement_type="SCARICO" if delta > 0 else "CARICO",
+                                        quantity=abs(delta),
+                                        destination=order_to_edit.destination or order_to_edit.customer,
+                                        reference=f"Rettifica ordine {order_to_edit.order_number}",
+                                        unit_cost=float(product.unit_cost or 0),
+                                        notes="Rettifica giacenza dopo modifica quantità consegnata"
+                                    ))
+                        if stock_error:
+                            session.rollback()
+                            st.error(stock_error)
+                        else:
+                            # Update existing lines, add new ones, remove extras.
+                            for i, item in enumerate(edited_items):
+                                if i < len(old_lines):
+                                    line = old_lines[i]
+                                else:
+                                    line = OrderLine()
+                                    order_to_edit.lines.append(line)
 
-                            line.product_id = item["product_id"]
-                            line.code = item["code"].strip()
-                            line.description = item["description"].strip()
-                            line.quantity_ordered = item["quantity"]
-                            line.quantity_delivered = item["delivered"]
-                            line.unit_price = item["price"]
-                            line.discount_percent = item["discount"]
-                            line.vat_percent = item["vat"]
+                                line.product_id = item["product_id"]
+                                line.code = item["code"].strip()
+                                line.description = item["description"].strip()
+                                line.quantity_ordered = item["quantity"]
+                                line.quantity_delivered = item["delivered"]
+                                line.unit_price = item["price"]
+                                line.discount_percent = item["discount"]
+                                line.vat_percent = item["vat"]
 
-                        for line in old_lines[len(edited_items):]:
-                            order_to_edit.lines.remove(line)
+                            for line in old_lines[len(edited_items):]:
+                                # If an already-delivered line is removed from the
+                                # order, restore that quantity to warehouse stock.
+                                if line.product_id and float(line.quantity_delivered or 0) > 0:
+                                    product = session.get(Product, line.product_id)
+                                    if product:
+                                        restored = float(line.quantity_delivered)
+                                        product.quantity = float(product.quantity or 0) + restored
+                                        session.add(StockMovement(
+                                            product_id=product.id,
+                                            product_code=product.code,
+                                            description=product.description,
+                                            movement_date=date.today(),
+                                            movement_type="CARICO",
+                                            quantity=restored,
+                                            destination="Magazzino",
+                                            reference=f"Rettifica ordine {order_to_edit.order_number}",
+                                            unit_cost=float(product.unit_cost or 0),
+                                            notes="Ripristino giacenza per rimozione riga ordine già consegnata"
+                                        ))
+                                order_to_edit.lines.remove(line)
 
-                        session.commit()
-                        st.success("Ordine modificato correttamente.")
-                        st.rerun()
+                            session.commit()
+                            st.success("Ordine modificato correttamente.")
+                            st.rerun()
 
             # Delete the complete order
             with st.expander("Elimina ordine selezionato"):
@@ -960,11 +1266,34 @@ def render_inventory():
                     if save_delivery:
                         for line_id, additional in delivery_values:
                             line = session.get(OrderLine, line_id)
-                            if line:
+                            if line and additional > 0:
                                 line.quantity_delivered += additional
+                                product = session.get(Product, line.product_id) if line.product_id else None
+                                if product:
+                                    available = float(product.quantity or 0)
+                                    if additional > available:
+                                        st.error(
+                                            f"Giacenza insufficiente per {product.description}: "
+                                            f"disponibili {available:g}, richiesti {additional:g}."
+                                        )
+                                        session.rollback()
+                                        st.stop()
+                                    product.quantity = available - float(additional)
+                                    session.add(StockMovement(
+                                        product_id=product.id,
+                                        product_code=product.code,
+                                        description=product.description,
+                                        movement_date=date.today(),
+                                        movement_type="SCARICO",
+                                        quantity=float(additional),
+                                        destination=selected_order.destination or selected_order.customer,
+                                        reference=f"Ordine {selected_order.order_number}",
+                                        unit_cost=float(product.unit_cost or 0),
+                                        notes="Scarico automatico per consegna ordine"
+                                    ))
 
                         session.commit()
-                        st.success("Consegne aggiornate.")
+                        st.success("Consegne aggiornate e giacenza aggiornata per gli articoli collegati al magazzino.")
                         st.rerun()
 
                     pdf_bytes = genera_pdf(selected_order)
@@ -981,3 +1310,134 @@ def render_inventory():
 
         else:
             st.info("Non ci sono ancora ordini registrati.")
+
+# ==================================================
+# EXPENSE REGISTER (used by the main app navigation)
+# ==================================================
+
+def render_expenses():
+    st.header("💶 Elenco delle spese")
+    st.caption("Acquisti registrati dai fornitori e altre spese aziendali.")
+
+    with st.expander("Registra una nuova spesa", expanded=True):
+        with st.form("manual_expense_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            expense_date = c1.date_input("Data", value=date.today(), format="DD/MM/YYYY")
+            expense_category = c2.selectbox(
+                "Categoria", ["Generale", "Trasporto", "Ufficio", "Manutenzione", "Servizi", "Altro"]
+            )
+            expense_description = st.text_input("Descrizione *")
+            c3, c4 = st.columns(2)
+            expense_supplier = c3.text_input("Fornitore")
+            expense_amount = c4.number_input("Importo (€)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+            expense_payment = st.selectbox("Metodo di pagamento", ["", "Bonifico", "Contanti", "Carta", "Altro"])
+            expense_notes = st.text_area("Note")
+            save_expense = st.form_submit_button("Salva spesa", type="primary")
+        if save_expense:
+            if not expense_description.strip() or expense_amount <= 0:
+                st.error("Inserisci una descrizione e un importo maggiore di zero.")
+            else:
+                with InventorySession() as session:
+                    session.add(Expense(
+                        expense_date=expense_date,
+                        category=expense_category,
+                        description=expense_description.strip(),
+                        supplier=expense_supplier.strip(),
+                        amount=float(expense_amount),
+                        payment_method=expense_payment,
+                        notes=expense_notes.strip()
+                    ))
+                    session.commit()
+                st.success("Spesa registrata.")
+                st.rerun()
+
+    with InventorySession() as session:
+        rows = session.query(Expense).order_by(Expense.expense_date.desc(), Expense.id.desc()).all()
+        data = [{
+            "Data": x.expense_date.strftime("%d/%m/%Y"),
+            "Categoria": x.category,
+            "Descrizione": x.description,
+            "Fornitore": x.supplier,
+            "Importo (€)": round(x.amount, 2),
+            "Pagamento": x.payment_method,
+            "Note": x.notes
+        } for x in rows]
+    if data:
+        df = pd.DataFrame(data)
+        st.metric("Totale spese registrate", euro(float(df["Importo (€)"].sum())))
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.download_button("Scarica elenco spese CSV", df.to_csv(index=False).encode("utf-8-sig"), file_name="elenco_spese.csv", mime="text/csv")
+    else:
+        st.info("Nessuna spesa registrata.")
+
+
+# ==================================================
+# STOCK DISCHARGE REGISTER (used by the main app navigation)
+# ==================================================
+
+def render_stock_outflow():
+    st.header("📤 Elenco scarico magazzino")
+    st.caption("Registra le uscite manuali e consulta gli scarichi automatici per consegna ordine.")
+
+    with InventorySession() as session:
+        products = load_products(session)
+        options = {f"{p.code} — {p.description} (disponibili: {p.quantity:g})": p.id for p in products}
+
+    with st.expander("Registra uno scarico manuale", expanded=True):
+        if not options:
+            st.info("Nessun articolo in magazzino.")
+        else:
+            with st.form("manual_stock_out_form", clear_on_submit=True):
+                selected_label = st.selectbox("Articolo", list(options))
+                c1, c2 = st.columns(2)
+                out_quantity = c1.number_input("Quantità da scaricare", min_value=0.01, value=1.0, step=1.0)
+                out_date = c2.date_input("Data scarico", value=date.today(), format="DD/MM/YYYY")
+                out_destination = st.text_input("Destinazione / Reparto / Persona")
+                out_reference = st.text_input("Riferimento (ordine, richiesta, documento)")
+                out_notes = st.text_area("Note")
+                save_out = st.form_submit_button("Registra scarico", type="primary")
+            if save_out:
+                product_id = options[selected_label]
+                with InventorySession() as session:
+                    product = session.get(Product, product_id)
+                    if not product or float(product.quantity or 0) < float(out_quantity):
+                        st.error("Giacenza insufficiente: scarico non registrato.")
+                    else:
+                        product.quantity = float(product.quantity or 0) - float(out_quantity)
+                        session.add(StockMovement(
+                            product_id=product.id,
+                            product_code=product.code,
+                            description=product.description,
+                            movement_date=out_date,
+                            movement_type="SCARICO",
+                            quantity=float(out_quantity),
+                            destination=out_destination.strip(),
+                            reference=out_reference.strip(),
+                            unit_cost=float(product.unit_cost or 0),
+                            notes=out_notes.strip()
+                        ))
+                        session.commit()
+                        st.success(f"Scarico registrato. Giacenza residua: {product.quantity:g}.")
+                        st.rerun()
+
+    with InventorySession() as session:
+        movements = session.query(StockMovement).filter(
+            StockMovement.movement_type == "SCARICO"
+        ).order_by(StockMovement.movement_date.desc(), StockMovement.id.desc()).all()
+        rows = [{
+            "Data": m.movement_date.strftime("%d/%m/%Y"),
+            "Codice": m.product_code,
+            "Articolo": m.description,
+            "Quantità scaricata": m.quantity,
+            "Destinazione": m.destination,
+            "Riferimento": m.reference,
+            "Costo unitario (€)": round(m.unit_cost, 2),
+            "Valore scarico (€)": round(m.quantity * m.unit_cost, 2),
+            "Note": m.notes
+        } for m in movements]
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.download_button("Scarica scarichi CSV", df.to_csv(index=False).encode("utf-8-sig"), file_name="elenco_scarico_magazzino.csv", mime="text/csv")
+    else:
+        st.info("Nessuno scarico registrato.")

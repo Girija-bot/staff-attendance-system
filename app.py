@@ -185,6 +185,11 @@ class Staff(Base):
         nullable=True
     )
 
+    iban: Mapped[str | None] = mapped_column(
+        String(34),
+        nullable=True
+    )
+
     identity_doc_type: Mapped[str | None] = mapped_column(
         String(50),
         nullable=True
@@ -467,6 +472,7 @@ staff_new_columns = {
     "codice_fiscale": "VARCHAR(20)",
     "email": "VARCHAR(150)",
     "phone": "VARCHAR(30)",
+    "iban": "VARCHAR(34)",
     "identity_doc_type": "VARCHAR(50)",
     "identity_doc_number": "VARCHAR(100)",
     "identity_doc_expiry": "DATE",
@@ -592,6 +598,7 @@ TRANSLATIONS = {
         "tax_code": "Codice Fiscale",
         "email": "Email address",
         "phone": "Phone number",
+        "iban": "IBAN",
         "document_type": "Identity document type",
         "document_number": "Identity document number",
         "document_expiry": "Document expiry date",
@@ -674,6 +681,7 @@ TRANSLATIONS = {
         "tax_code": "Codice Fiscale",
         "email": "Indirizzo e-mail",
         "phone": "Numero di telefono",
+        "iban": "IBAN",
         "document_type": "Tipo di documento",
         "document_number": "Numero del documento",
         "document_expiry": "Data di scadenza del documento",
@@ -766,9 +774,10 @@ with st.sidebar:
         tr("record"),
         tr("staff"),
         tr("weekly"),
-        tr("documents"),
         "Magazzino",
-        "Pagamenti"
+        "Pagamenti",
+        "Elenco delle spese",
+        "Elenco scarico magazzino"
     ]
 
     page = st.radio(
@@ -1071,192 +1080,158 @@ if page == "Magazzino":
     render_inventory()
     st.stop()
 
-
-# ==================================================
-# STAFF DOCUMENTS
-# ==================================================
-
-if page == tr("documents"):
-
-    st.subheader(tr("documents"))
-    st.caption(
-        "Private staff files. Both Girija and Signor Paolo can view, upload "
-        "and download documents for every staff member."
-        if language == "English"
-        else "Documenti privati del personale. Sia Girija sia Signor Paolo "
-             "possono visualizzare, caricare e scaricare i documenti di tutto il personale."
-    )
-    st.info(
-        "Files stay in the private Neon bucket. Downloads use temporary "
-        "links that expire after 60 seconds."
-        if language == "English"
-        else "I file restano nel bucket privato Neon. I link di download "
-             "temporanei scadono dopo 60 secondi."
-    )
-
-    people_for_documents = all_staff(active_only=False)
-
-    if not people_for_documents:
-        st.info("No staff members found." if language == "English" else "Nessun dipendente trovato.")
-    else:
-        staff_by_label = {
-            f"{person.name} — {category_label(person.category)} (ID {person.id})": person
-            for person in people_for_documents
-        }
-        selected_staff_label = st.selectbox(
-            "Staff member / Dipendente",
-            list(staff_by_label.keys()),
-            key="staff_document_person"
-        )
-        selected_staff = staff_by_label[selected_staff_label]
-
-        st.markdown("#### Upload a document / Carica un documento")
-        uploaded_document = st.file_uploader(
-            "Choose a PDF, JPG or PNG file / Scegli un file PDF, JPG o PNG",
-            type=["pdf", "jpg", "jpeg", "png"],
-            key=f"staff_document_upload_{selected_staff.id}"
-        )
-
-        if st.button(
-            "Upload document / Carica documento",
-            type="primary",
-            disabled=uploaded_document is None,
-            key=f"upload_staff_document_{selected_staff.id}"
-        ):
-            try:
-                file_bytes = uploaded_document.getvalue()
-                safe_filename, detected_content_type = validate_staff_document(
-                    uploaded_document.name,
-                    file_bytes
-                )
-                storage = get_private_storage_client()
-                object_key = (
-                    f"staff-documents/{selected_staff.id}/"
-                    f"{uuid.uuid4().hex}{os.path.splitext(safe_filename)[1].lower()}"
-                )
-
-                # Upload first; if the database insert fails, remove the orphaned object.
-                storage.put_object(
-                    Bucket=DOCUMENT_BUCKET,
-                    Key=object_key,
-                    Body=file_bytes,
-                    ContentType=detected_content_type,
-                )
-
-                try:
-                    with Session() as session:
-                        document_record = StaffDocument(
-                            staff_id=selected_staff.id,
-                            original_filename=safe_filename,
-                            object_key=object_key,
-                            content_type=detected_content_type,
-                            file_size=len(file_bytes),
-                            uploaded_by=st.session_state.authenticated_user,
-                        )
-                        session.add(document_record)
-                        session.commit()
-                except Exception:
-                    try:
-                        storage.delete_object(Bucket=DOCUMENT_BUCKET, Key=object_key)
-                    except Exception:
-                        pass
-                    raise
-
-                st.success(
-                    "Document uploaded successfully." if language == "English"
-                    else "Documento caricato correttamente."
-                )
-                st.rerun()
-
-            except ValueError as exc:
-                st.error(str(exc))
-            except Exception:
-                st.error(
-                    "Upload failed. Check the private storage configuration and try again."
-                    if language == "English"
-                    else "Caricamento non riuscito. Verifica la configurazione dell'archivio privato e riprova."
-                )
-
-        st.divider()
-        st.markdown("#### Stored documents / Documenti archiviati")
-
-        with Session() as session:
-            stored_documents = (
-                session.query(StaffDocument)
-                .filter(StaffDocument.staff_id == selected_staff.id)
-                .order_by(StaffDocument.uploaded_at.desc())
-                .all()
-            )
-            # Detach simple values before closing the session.
-            document_rows = [
-                {
-                    "id": item.id,
-                    "filename": item.original_filename,
-                    "object_key": item.object_key,
-                    "content_type": item.content_type,
-                    "file_size": item.file_size,
-                    "uploaded_by": item.uploaded_by,
-                    "uploaded_at": item.uploaded_at,
-                }
-                for item in stored_documents
-            ]
-
-        if not document_rows:
-            st.info("No documents uploaded for this person yet." if language == "English" else "Nessun documento caricato per questa persona.")
-        else:
-            for document_row in document_rows:
-                left, middle, right = st.columns([4, 2, 1])
-                left.write(f"**{document_row['filename']}**")
-                left.caption(
-                    f"{document_row['file_size'] / 1024:.1f} KB · "
-                    f"Uploaded by {document_row['uploaded_by']} · "
-                    f"{document_row['uploaded_at'].strftime('%d/%m/%Y %H:%M')}"
-                )
-                middle.write(document_row["content_type"])
-
-                try:
-                    storage = get_private_storage_client()
-                    safe_download_name = document_row["filename"].replace('"', "")
-                    temporary_url = storage.generate_presigned_url(
-                        "get_object",
-                        Params={
-                            "Bucket": DOCUMENT_BUCKET,
-                            "Key": document_row["object_key"],
-                            "ResponseContentDisposition": (
-                                f'attachment; filename="{safe_download_name}"'
-                            ),
-                        },
-                        ExpiresIn=60,
-                    )
-                    audit_state_key = (
-                        f"document_link_logged_{document_row['id']}_"
-                        f"{st.session_state.authenticated_user}"
-                    )
-                    if not st.session_state.get(audit_state_key, False):
-                        with Session() as session:
-                            session.add(StaffDocumentAccessLog(
-                                document_id=document_row["id"],
-                                username=st.session_state.authenticated_user,
-                                action="download_link_created",
-                            ))
-                            session.commit()
-                        st.session_state[audit_state_key] = True
-
-                    right.link_button(
-                        "Download" if language == "English" else "Scarica",
-                        temporary_url,
-                    )
-                except Exception:
-                    right.error(
-                        "Unavailable" if language == "English" else "Non disponibile"
-                    )
-                    st.warning(
-                        "A download link could not be created. Check the storage settings."
-                        if language == "English"
-                        else "Impossibile creare il link di download. Verifica le impostazioni dell'archivio."
-                    )
-
+if page == "Elenco delle spese":
+    from inventory import render_expenses
+    render_expenses()
     st.stop()
+
+if page == "Elenco scarico magazzino":
+    from inventory import render_stock_outflow
+    render_stock_outflow()
+    st.stop()
+
+
+# ==================================================
+# PRIVATE STAFF DOCUMENTS
+# ==================================================
+
+def render_staff_documents_for(selected_staff):
+    """Upload/list/download documents for one staff member using private Neon storage."""
+    st.caption(
+        "Files stay in the private Neon bucket. Downloads use temporary links that expire after 60 seconds."
+        if language == "English"
+        else "I file restano nel bucket privato Neon. I link di download temporanei scadono dopo 60 secondi."
+    )
+    uploaded_document = st.file_uploader(
+        "Choose a PDF, JPG or PNG file / Scegli un file PDF, JPG o PNG",
+        type=["pdf", "jpg", "jpeg", "png"],
+        key=f"staff_document_upload_{selected_staff.id}"
+    )
+
+    if st.button(
+        "Upload document / Carica documento",
+        type="primary",
+        disabled=uploaded_document is None,
+        key=f"upload_staff_document_{selected_staff.id}"
+    ):
+        try:
+            file_bytes = uploaded_document.getvalue()
+            safe_filename, detected_content_type = validate_staff_document(
+                uploaded_document.name, file_bytes
+            )
+            storage = get_private_storage_client()
+            object_key = (
+                f"staff-documents/{selected_staff.id}/"
+                f"{uuid.uuid4().hex}{os.path.splitext(safe_filename)[1].lower()}"
+            )
+            storage.put_object(
+                Bucket=DOCUMENT_BUCKET,
+                Key=object_key,
+                Body=file_bytes,
+                ContentType=detected_content_type,
+            )
+            try:
+                with Session() as session:
+                    document_record = StaffDocument(
+                        staff_id=selected_staff.id,
+                        original_filename=safe_filename,
+                        object_key=object_key,
+                        content_type=detected_content_type,
+                        file_size=len(file_bytes),
+                        uploaded_by=st.session_state.authenticated_user,
+                    )
+                    session.add(document_record)
+                    session.commit()
+            except Exception:
+                try:
+                    storage.delete_object(Bucket=DOCUMENT_BUCKET, Key=object_key)
+                except Exception:
+                    pass
+                raise
+            st.success(
+                "Document uploaded successfully." if language == "English"
+                else "Documento caricato correttamente."
+            )
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception:
+            st.error(
+                "Upload failed. Check the private storage configuration and try again."
+                if language == "English"
+                else "Caricamento non riuscito. Verifica la configurazione dell'archivio privato e riprova."
+            )
+
+    st.markdown("**Stored documents / Documenti archiviati**")
+    with Session() as session:
+        stored_documents = (
+            session.query(StaffDocument)
+            .filter(StaffDocument.staff_id == selected_staff.id)
+            .order_by(StaffDocument.uploaded_at.desc())
+            .all()
+        )
+        document_rows = [{
+            "id": item.id,
+            "filename": item.original_filename,
+            "object_key": item.object_key,
+            "content_type": item.content_type,
+            "file_size": item.file_size,
+            "uploaded_by": item.uploaded_by,
+            "uploaded_at": item.uploaded_at,
+        } for item in stored_documents]
+
+    if not document_rows:
+        st.info(
+            "No documents uploaded for this person yet." if language == "English"
+            else "Nessun documento caricato per questa persona."
+        )
+        return
+
+    for document_row in document_rows:
+        left, middle, right = st.columns([4, 2, 1])
+        left.write(f"**{document_row['filename']}**")
+        left.caption(
+            f"{document_row['file_size'] / 1024:.1f} KB · "
+            f"Uploaded by {document_row['uploaded_by']} · "
+            f"{document_row['uploaded_at'].strftime('%d/%m/%Y %H:%M')}"
+        )
+        middle.write(document_row["content_type"])
+        try:
+            storage = get_private_storage_client()
+            safe_download_name = document_row["filename"].replace('"', "")
+            temporary_url = storage.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": DOCUMENT_BUCKET,
+                    "Key": document_row["object_key"],
+                    "ResponseContentDisposition": f'attachment; filename="{safe_download_name}"',
+                },
+                ExpiresIn=60,
+            )
+            audit_state_key = (
+                f"document_link_logged_{document_row['id']}_"
+                f"{st.session_state.authenticated_user}"
+            )
+            if not st.session_state.get(audit_state_key, False):
+                with Session() as session:
+                    session.add(StaffDocumentAccessLog(
+                        document_id=document_row["id"],
+                        username=st.session_state.authenticated_user,
+                        action="download_link_created",
+                    ))
+                    session.commit()
+                st.session_state[audit_state_key] = True
+            right.link_button(
+                "Download" if language == "English" else "Scarica",
+                temporary_url,
+            )
+        except Exception:
+            right.error("Unavailable" if language == "English" else "Non disponibile")
+            st.warning(
+                "A download link could not be created. Check the storage settings."
+                if language == "English"
+                else "Impossibile creare il link di download. Verifica le impostazioni dell'archivio."
+            )
 
 
 # ==================================================
@@ -1693,6 +1668,12 @@ elif page == tr("staff"):
                 max_chars=30
             )
 
+            iban = st.text_input(
+                tr("iban"),
+                max_chars=34,
+                help="IBAN for bank transfers / IBAN per bonifici"
+            )
+
             st.divider()
 
             st.markdown(
@@ -1728,145 +1709,127 @@ elif page == tr("staff"):
             )
 
             if submitted:
-
-               if not name.strip():
-
-                 st.error(tr("enter_name"))
-
-               else:
-
-                new_staff_id = None
-
-        try:
-            prepared_document = None
-
-            # Validate the attachment before saving the staff member.
-            if uploaded_staff_document is not None:
-
-                file_bytes = uploaded_staff_document.getvalue()
-
-                safe_filename, detected_content_type = (
-                    validate_staff_document(
-                        uploaded_staff_document.name,
-                        file_bytes
-                    )
-                )
-
-                prepared_document = (
-                    file_bytes,
-                    safe_filename,
-                    detected_content_type
-                )
-
-            # Save the staff member first.
-            with Session() as session:
-
-                new_staff = Staff(
-                    name=name.strip(),
-                    category=category,
-                    partita_iva=partita_iva.strip() or None,
-                    codice_fiscale=codice_fiscale.strip() or None,
-                    email=email.strip() or None,
-                    phone=phone.strip() or None,
-                    identity_doc_type=document_type or None,
-                    identity_doc_number=document_number.strip() or None,
-                    identity_doc_expiry=document_expiry
-                )
-
-                session.add(new_staff)
-                session.commit()
-
-                new_staff_id = new_staff.id
-
-        except ValueError as exc:
-
-            st.error(str(exc))
-
-        except Exception:
-
-            st.error(
-                "Could not save the staff member. Please try again."
-            )
-
-        else:
-
-            # Upload the attachment using the existing private storage.
-            if prepared_document is not None:
-
-                file_bytes, safe_filename, detected_content_type = (
-                    prepared_document
-                )
-
-                object_key = (
-                    f"staff-documents/{new_staff_id}/"
-                    f"{uuid.uuid4().hex}"
-                    f"{os.path.splitext(safe_filename)[1].lower()}"
-                )
-
-                try:
-
-                    storage = get_private_storage_client()
-
-                    storage.put_object(
-                        Bucket=DOCUMENT_BUCKET,
-                        Key=object_key,
-                        Body=file_bytes,
-                        ContentType=detected_content_type,
-                    )
+                if not name.strip():
+                    st.error(tr("enter_name"))
+                else:
+                    new_staff_id = None
+                    prepared_document = None
 
                     try:
+                        # Validate the attachment before saving the staff member.
+                        if uploaded_staff_document is not None:
+                            file_bytes = uploaded_staff_document.getvalue()
 
-                        with Session() as session:
-
-                            document_record = StaffDocument(
-                                staff_id=new_staff_id,
-                                original_filename=safe_filename,
-                                object_key=object_key,
-                                content_type=detected_content_type,
-                                file_size=len(file_bytes),
-                                uploaded_by=(
-                                    st.session_state.authenticated_user
-                                ),
+                            safe_filename, detected_content_type = (
+                                validate_staff_document(
+                                    uploaded_staff_document.name,
+                                    file_bytes
+                                )
                             )
 
-                            session.add(document_record)
+                            prepared_document = (
+                                file_bytes,
+                                safe_filename,
+                                detected_content_type
+                            )
+
+                        # Save the staff member first.
+                        with Session() as session:
+                            new_staff = Staff(
+                                name=name.strip(),
+                                category=category,
+                                partita_iva=partita_iva.strip() or None,
+                                codice_fiscale=codice_fiscale.strip() or None,
+                                email=email.strip() or None,
+                                phone=phone.strip() or None,
+                                iban=iban.strip().replace(" ", "").upper() or None,
+                                identity_doc_type=document_type or None,
+                                identity_doc_number=document_number.strip() or None,
+                                identity_doc_expiry=document_expiry
+                            )
+
+                            session.add(new_staff)
                             session.commit()
+                            new_staff_id = new_staff.id
+
+                    except ValueError as exc:
+                        st.error(str(exc))
 
                     except Exception:
+                        st.error(
+                            "Could not save the staff member. Please try again."
+                        )
 
-                        try:
-                            storage.delete_object(
-                                Bucket=DOCUMENT_BUCKET,
-                                Key=object_key
+                    else:
+                        # Upload the attachment using the existing private storage.
+                        if prepared_document is not None:
+                            file_bytes, safe_filename, detected_content_type = (
+                                prepared_document
                             )
-                        except Exception:
-                            pass
 
-                        raise
+                            object_key = (
+                                f"staff-documents/{new_staff_id}/"
+                                f"{uuid.uuid4().hex}"
+                                f"{os.path.splitext(safe_filename)[1].lower()}"
+                            )
 
-                    st.success(
-                        "Staff member and document saved successfully."
-                        if language == "English"
-                        else "Persona e documento salvati correttamente."
-                    )
+                            try:
+                                storage = get_private_storage_client()
 
-                except Exception:
+                                storage.put_object(
+                                    Bucket=DOCUMENT_BUCKET,
+                                    Key=object_key,
+                                    Body=file_bytes,
+                                    ContentType=detected_content_type,
+                                )
 
-                    st.warning(
-                        "The staff member was saved, but the document "
-                        "upload failed. You can upload it later from "
-                        "Staff documents."
-                        if language == "English"
-                        else "La persona è stata salvata, ma il caricamento "
-                             "del documento non è riuscito. Puoi caricarlo "
-                             "successivamente da Documenti del personale."
-                    )
+                                try:
+                                    with Session() as session:
+                                        document_record = StaffDocument(
+                                            staff_id=new_staff_id,
+                                            original_filename=safe_filename,
+                                            object_key=object_key,
+                                            content_type=detected_content_type,
+                                            file_size=len(file_bytes),
+                                            uploaded_by=(
+                                                st.session_state.authenticated_user
+                                            ),
+                                        )
 
-            else:
+                                        session.add(document_record)
+                                        session.commit()
 
-                st.success(
-                    f"{tr('added')} {name.strip()}."
-                )
+                                except Exception:
+                                    try:
+                                        storage.delete_object(
+                                            Bucket=DOCUMENT_BUCKET,
+                                            Key=object_key
+                                        )
+                                    except Exception:
+                                        pass
+                                    raise
+
+                                st.success(
+                                    "Staff member and document saved successfully."
+                                    if language == "English"
+                                    else "Persona e documento salvati correttamente."
+                                )
+
+                            except Exception:
+                                st.warning(
+                                    "The staff member was saved, but the document "
+                                    "upload failed. You can upload it later from "
+                                    "Staff documents."
+                                    if language == "English"
+                                    else "La persona è stata salvata, ma il caricamento "
+                                         "del documento non è riuscito. Puoi caricarlo "
+                                         "successivamente da Documenti del personale."
+                                )
+
+                        else:
+                            st.success(
+                                f"{tr('added')} {name.strip()}."
+                            )
 
 
     # STAFF LIST AND EDITING
@@ -1913,6 +1876,10 @@ elif page == tr("staff"):
                 )
 
                 st.write(
+                    f"**{tr('iban')}:** {person.iban or tr('not_provided')}"
+                )
+
+                st.write(
                     f"**{tr('document_type')}:** "
                     f"{person.identity_doc_type or tr('not_provided')}"
                 )
@@ -1931,6 +1898,12 @@ elif page == tr("staff"):
                 st.write(
                     f"**{tr('document_expiry')}:** {expiry_text}"
                 )
+
+                with st.expander(
+                    "Documenti del personale / Staff documents"
+                ):
+                    st.warning(tr("document_warning"))
+                    render_staff_documents_for(person)
 
                 col4, col5 = st.columns(2)
 
@@ -2035,6 +2008,13 @@ elif page == tr("staff"):
                             key=f"phone_{person.id}"
                         )
 
+                        new_iban = st.text_input(
+                            tr("iban"),
+                            value=person.iban or "",
+                            max_chars=34,
+                            key=f"iban_{person.id}"
+                        )
+
                         current_doc_type = (
                             person.identity_doc_type
                             if person.identity_doc_type in DOCUMENT_TYPES
@@ -2090,6 +2070,7 @@ elif page == tr("staff"):
                                         obj.codice_fiscale = new_tax_code.strip() or None
                                         obj.email = new_email.strip() or None
                                         obj.phone = new_phone.strip() or None
+                                        obj.iban = new_iban.strip().replace(" ", "").upper() or None
                                         obj.identity_doc_type = new_doc_type or None
                                         obj.identity_doc_number = new_doc_number.strip() or None
                                         obj.identity_doc_expiry = new_doc_expiry
