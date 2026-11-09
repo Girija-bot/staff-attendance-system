@@ -456,6 +456,92 @@ def validate_staff_document(filename, content):
 
 
 # ==================================================
+# ONE-TIME STAFF RESET (applied automatically once)
+# Removes every staff member together with attendance rows, document
+# metadata, uploaded document objects and access logs. Payments,
+# inventory, orders and expenses are preserved.
+# ==================================================
+
+STAFF_RESET_KEY = "staff_reset_2026_11"
+
+
+def run_one_time_staff_reset():
+    """Delete all staff data once; keep payments, inventory and expenses."""
+
+    with engine.begin() as connection:
+
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS app_migrations ("
+            "migration_key VARCHAR(100) PRIMARY KEY, "
+            "applied_at DATETIME NOT NULL)"
+        ))
+
+        already_applied = connection.execute(
+            text(
+                "SELECT 1 FROM app_migrations "
+                "WHERE migration_key = :key"
+            ),
+            {"key": STAFF_RESET_KEY}
+        ).first()
+
+        if already_applied:
+            return
+
+        document_keys = [
+            row[0]
+            for row in connection.execute(
+                text("SELECT object_key FROM staff_documents")
+            ).all()
+        ]
+
+    # Best-effort removal of the uploaded files from private storage.
+    if document_keys:
+        try:
+            storage = get_private_storage_client()
+            for object_key in document_keys:
+                try:
+                    storage.delete_object(
+                        Bucket=DOCUMENT_BUCKET,
+                        Key=object_key
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    with engine.begin() as connection:
+
+        connection.execute(text(
+            "DELETE FROM staff_document_access_logs"
+        ))
+        connection.execute(text(
+            "DELETE FROM staff_documents"
+        ))
+        connection.execute(text(
+            "DELETE FROM attendance"
+        ))
+        connection.execute(text(
+            "DELETE FROM staff"
+        ))
+
+        # Keep payment history, detach it from the deleted staff.
+        connection.execute(text(
+            "UPDATE payments SET staff_id = NULL"
+        ))
+
+        connection.execute(
+            text(
+                "INSERT INTO app_migrations "
+                "(migration_key, applied_at) VALUES (:key, :now)"
+            ),
+            {"key": STAFF_RESET_KEY, "now": datetime.now()}
+        )
+
+
+run_one_time_staff_reset()
+
+
+# ==================================================
 
 staff_columns = {
     column["name"]
@@ -507,6 +593,7 @@ with engine.begin() as connection:
 
 CATEGORIES = [
     "Officially registered",
+    "Not officially registered",
     "On-call staff",
     "Personale a chiamata full-time",
     "Personale a chiamata part-time",
@@ -516,6 +603,9 @@ CATEGORIES = [
 CATEGORY_IT = {
     "Officially registered":
         "Personale regolarmente assunto",
+
+    "Not officially registered":
+        "Personale non regolarmente registrato",
 
     "On-call staff":
         "Personale a chiamata",
@@ -1828,313 +1918,256 @@ elif page == tr("staff"):
                             )
 
 
-    # STAFF LIST AND EDITING
+    # STAFF TABLE (everyone in one scrollable table)
 
     people = all_staff(active_only=False)
 
     if people:
 
-        st.markdown(
-            f"### {tr('staff_list')}"
-        )
+        st.markdown(f"### {tr('staff_list')}")
+
+        staff_rows = []
 
         for person in people:
 
-            with st.container(border=True):
-
-                col1, col2 = st.columns([2, 2])
-
-                col1.write(f"**{person.name}**")
-                col2.write(category_label(person.category))
-
-                detail1, detail2 = st.columns(2)
-
-                detail1.write(
-                    f"**{tr('vat')}:** "
-                    f"{person.partita_iva or tr('not_provided')}"
-                )
-
-                detail2.write(
-                    f"**{tr('tax_code')}:** "
-                    f"{person.codice_fiscale or tr('not_provided')}"
-                )
-
-                detail3, detail4 = st.columns(2)
-
-                detail3.write(
-                    f"**{tr('email')}:** "
-                    f"{person.email or tr('not_provided')}"
-                )
-
-                detail4.write(
-                    f"**{tr('phone')}:** "
-                    f"{person.phone or tr('not_provided')}"
-                )
-
-                st.write(
-                    f"**{tr('iban')}:** {person.iban or tr('not_provided')}"
-                )
-
-                st.write(
-                    f"**{tr('document_type')}:** "
-                    f"{person.identity_doc_type or tr('not_provided')}"
-                )
-
-                st.write(
-                    f"**{tr('document_number')}:** "
-                    f"{person.identity_doc_number or tr('not_provided')}"
-                )
-
-                expiry_text = (
+            staff_rows.append({
+                "ID": person.id,
+                tr("name"): person.name,
+                tr("category"): category_label(person.category),
+                tr("vat"): person.partita_iva or "",
+                tr("tax_code"): person.codice_fiscale or "",
+                tr("email"): person.email or "",
+                tr("phone"): person.phone or "",
+                tr("iban"): person.iban or "",
+                tr("document_type"): person.identity_doc_type or "",
+                tr("document_number"): person.identity_doc_number or "",
+                tr("document_expiry"): (
                     person.identity_doc_expiry.strftime("%d/%m/%Y")
                     if person.identity_doc_expiry
-                    else tr("not_provided")
-                )
+                    else ""
+                ),
+                ("Status" if language == "English" else "Stato"): (
+                    tr("active") if person.active else tr("inactive")
+                ),
+            })
 
-                st.write(
-                    f"**{tr('document_expiry')}:** {expiry_text}"
-                )
+        staff_table_df = pd.DataFrame(staff_rows)
 
-                with st.expander(
-                    "Documenti del personale / Staff documents"
-                ):
-                    st.warning(tr("document_warning"))
-                    render_staff_documents_for(person)
+        # The fixed height gives vertical scrolling; Streamlit adds
+        # horizontal scrolling automatically when the table is wider
+        # than the page.
+        st.dataframe(
+            staff_table_df,
+            use_container_width=True,
+            hide_index=True,
+            height=420,
+        )
 
-                col4, col5 = st.columns(2)
+        # INDIVIDUAL EDIT AND DELETE FOR THE SELECTED PERSON
 
-                col4.write(
-                    tr("active")
-                    if person.active
-                    else tr("inactive")
-                )
+        st.markdown(
+            "### Modifica o elimina una persona / Edit or delete a person"
+        )
 
-                if person.active:
-
-                    if col5.button(
-                        tr("deactivate"),
-                        key=f"deactivate_{person.id}"
-                    ):
-
-                        with Session() as session:
-
-                            obj = session.get(
-                                Staff,
-                                person.id
-                            )
-
-                            if obj:
-                                obj.active = 0
-                                session.commit()
-
-                        st.rerun()
-
-                else:
-
-                    if col5.button(
-                        tr("reactivate"),
-                        key=f"reactivate_{person.id}"
-                    ):
-
-                        with Session() as session:
-
-                            obj = session.get(
-                                Staff,
-                                person.id
-                            )
-
-                            if obj:
-                                obj.active = 1
-                                session.commit()
-
-                        st.rerun()
-
-                # EDIT STAFF DETAILS
-
-                with st.expander(
-                    f"{tr('edit_details')} — {person.name}"
-                ):
-
-                    with st.form(
-                        f"staff_details_form_{person.id}"
-                    ):
-
-                        new_name = st.text_input(
-                            tr("name"),
-                            value=person.name,
-                            key=f"name_{person.id}"
-                        )
-
-                        new_category = st.selectbox(
-                            tr("category"),
-                            CATEGORIES,
-                            index=(
-                                CATEGORIES.index(person.category)
-                                if person.category in CATEGORIES
-                                else 0
-                            ),
-                            format_func=category_label,
-                            key=f"category_{person.id}"
-                        )
-
-                        new_vat = st.text_input(
-                            tr("vat"),
-                            value=person.partita_iva or "",
-                            max_chars=30,
-                            key=f"vat_{person.id}"
-                        )
-
-                        new_tax_code = st.text_input(
-                            tr("tax_code"),
-                            value=person.codice_fiscale or "",
-                            max_chars=20,
-                            key=f"tax_{person.id}"
-                        )
-
-                        new_email = st.text_input(
-                            tr("email"),
-                            value=person.email or "",
-                            key=f"email_{person.id}"
-                        )
-
-                        new_phone = st.text_input(
-                            tr("phone"),
-                            value=person.phone or "",
-                            max_chars=30,
-                            key=f"phone_{person.id}"
-                        )
-
-                        new_iban = st.text_input(
-                            tr("iban"),
-                            value=person.iban or "",
-                            max_chars=34,
-                            key=f"iban_{person.id}"
-                        )
-
-                        current_doc_type = (
-                            person.identity_doc_type
-                            if person.identity_doc_type in DOCUMENT_TYPES
-                            else ""
-                        )
-
-                        new_doc_type = st.selectbox(
-                            tr("document_type"),
-                            [""] + DOCUMENT_TYPES,
-                            index=(
-                                [""] + DOCUMENT_TYPES
-                            ).index(current_doc_type),
-                            key=f"doc_type_{person.id}"
-                        )
-
-                        new_doc_number = st.text_input(
-                            tr("document_number"),
-                            value=person.identity_doc_number or "",
-                            key=f"doc_number_{person.id}"
-                        )
-
-                        new_doc_expiry = st.date_input(
-                            tr("document_expiry"),
-                            value=person.identity_doc_expiry,
-                            format="DD/MM/YYYY",
-                            key=f"doc_expiry_{person.id}"
-                        )
-
-                        save_details = st.form_submit_button(
-                            tr("save_details")
-                        )
-
-                        if save_details:
-
-                            if not new_name.strip():
-
-                                st.error(tr("enter_name"))
-
-                            else:
-
-                                with Session() as session:
-
-                                    obj = session.get(
-                                        Staff,
-                                        person.id
-                                    )
-
-                                    if obj:
-
-                                        obj.name = new_name.strip()
-                                        obj.category = new_category
-                                        obj.partita_iva = new_vat.strip() or None
-                                        obj.codice_fiscale = new_tax_code.strip() or None
-                                        obj.email = new_email.strip() or None
-                                        obj.phone = new_phone.strip() or None
-                                        obj.iban = new_iban.strip().replace(" ", "").upper() or None
-                                        obj.identity_doc_type = new_doc_type or None
-                                        obj.identity_doc_number = new_doc_number.strip() or None
-                                        obj.identity_doc_expiry = new_doc_expiry
-
-                                        session.commit()
-
-                                st.success(tr("details_saved"))
-                                st.rerun()
-
-    # OPTIONAL DELETE SECTION
-
-    with st.expander(tr("delete_title")):
-
-        st.warning(tr("delete_warning"))
-
-        delete_people = all_staff(active_only=False)
-
-        delete_choices = {
-            f"{p.name} — {category_label(p.category)}": p.id
-            for p in delete_people
+        person_choices = {
+            f"{p.name} — {category_label(p.category)} (ID {p.id})": p.id
+            for p in people
         }
 
-        if delete_choices:
+        selected_person_label = st.selectbox(
+            "Persona / Person",
+            list(person_choices.keys()),
+            key="staff_table_person_choice"
+        )
 
-            selected_person = st.selectbox(
-                tr("delete_title"),
-                list(delete_choices.keys()),
-                key="delete_person_choice"
-            )
+        selected_person_id = person_choices[selected_person_label]
 
-            confirm_delete = st.checkbox(
-                tr("confirm_delete"),
-                key="confirm_staff_delete"
-            )
+        with Session() as session:
 
-            if st.button(
-                tr("delete_button"),
-                disabled=not confirm_delete,
-                key="delete_staff_button"
+            person = session.get(Staff, selected_person_id)
+
+            with st.expander(
+                "Documenti del personale / Staff documents"
+            ):
+                st.warning(tr("document_warning"))
+                render_staff_documents_for(person)
+
+            with st.expander(
+                f"{tr('edit_details')} — {person.name}"
             ):
 
-                selected_id = delete_choices[selected_person]
+                with st.form(
+                    f"staff_details_form_{person.id}"
+                ):
 
-                with Session() as session:
+                    new_name = st.text_input(
+                        tr("name"),
+                        value=person.name,
+                        key=f"name_{person.id}"
+                    )
+
+                    new_category = st.selectbox(
+                        tr("category"),
+                        CATEGORIES,
+                        index=(
+                            CATEGORIES.index(person.category)
+                            if person.category in CATEGORIES
+                            else 0
+                        ),
+                        format_func=category_label,
+                        key=f"category_{person.id}"
+                    )
+
+                    new_vat = st.text_input(
+                        tr("vat"),
+                        value=person.partita_iva or "",
+                        max_chars=30,
+                        key=f"vat_{person.id}"
+                    )
+
+                    new_tax_code = st.text_input(
+                        tr("tax_code"),
+                        value=person.codice_fiscale or "",
+                        max_chars=20,
+                        key=f"tax_{person.id}"
+                    )
+
+                    new_email = st.text_input(
+                        tr("email"),
+                        value=person.email or "",
+                        key=f"email_{person.id}"
+                    )
+
+                    new_phone = st.text_input(
+                        tr("phone"),
+                        value=person.phone or "",
+                        max_chars=30,
+                        key=f"phone_{person.id}"
+                    )
+
+                    new_iban = st.text_input(
+                        tr("iban"),
+                        value=person.iban or "",
+                        max_chars=34,
+                        key=f"iban_{person.id}"
+                    )
+
+                    current_doc_type = (
+                        person.identity_doc_type
+                        if person.identity_doc_type in DOCUMENT_TYPES
+                        else ""
+                    )
+
+                    new_doc_type = st.selectbox(
+                        tr("document_type"),
+                        [""] + DOCUMENT_TYPES,
+                        index=(
+                            [""] + DOCUMENT_TYPES
+                        ).index(current_doc_type),
+                        key=f"doc_type_{person.id}"
+                    )
+
+                    new_doc_number = st.text_input(
+                        tr("document_number"),
+                        value=person.identity_doc_number or "",
+                        key=f"doc_number_{person.id}"
+                    )
+
+                    new_doc_expiry = st.date_input(
+                        tr("document_expiry"),
+                        value=person.identity_doc_expiry,
+                        format="DD/MM/YYYY",
+                        key=f"doc_expiry_{person.id}"
+                    )
+
+                    new_active = st.checkbox(
+                        tr("active"),
+                        value=bool(person.active),
+                        key=f"active_{person.id}"
+                    )
+
+                    save_details = st.form_submit_button(
+                        tr("save_details")
+                    )
+
+                    if save_details:
+
+                        if not new_name.strip():
+
+                            st.error(tr("enter_name"))
+
+                        else:
+
+                            with Session() as save_session:
+
+                                obj = save_session.get(
+                                    Staff,
+                                    person.id
+                                )
+
+                                if obj:
+
+                                    obj.name = new_name.strip()
+                                    obj.category = new_category
+                                    obj.partita_iva = new_vat.strip() or None
+                                    obj.codice_fiscale = new_tax_code.strip() or None
+                                    obj.email = new_email.strip() or None
+                                    obj.phone = new_phone.strip() or None
+                                    obj.iban = new_iban.strip().replace(" ", "").upper() or None
+                                    obj.identity_doc_type = new_doc_type or None
+                                    obj.identity_doc_number = new_doc_number.strip() or None
+                                    obj.identity_doc_expiry = new_doc_expiry
+                                    obj.active = 1 if new_active else 0
+
+                                    save_session.commit()
+
+                            st.success(tr("details_saved"))
+                            st.rerun()
+
+            with st.expander(tr("delete_title")):
+
+                st.warning(tr("delete_warning"))
+
+                confirm_delete = st.checkbox(
+                    tr("confirm_delete"),
+                    key=f"confirm_staff_delete_{person.id}"
+                )
+
+                if st.button(
+                    tr("delete_button"),
+                    disabled=not confirm_delete,
+                    key=f"delete_staff_button_{person.id}"
+                ):
+
                     has_documents = session.query(StaffDocument.id).filter(
-                        StaffDocument.staff_id == selected_id
+                        StaffDocument.staff_id == person.id
                     ).first()
 
                     if has_documents:
+
                         st.error(
                             "This staff member has stored documents. Deactivate the person instead of deleting them."
                             if language == "English"
                             else "Questa persona ha documenti archiviati. Disattivala invece di eliminarla."
                         )
+
                     else:
+
                         session.query(Attendance).filter(
-                            Attendance.staff_id == selected_id
+                            Attendance.staff_id == person.id
                         ).delete(
                             synchronize_session=False
                         )
+
                         session.query(Payment).filter(
-                            Payment.staff_id == selected_id
+                            Payment.staff_id == person.id
                         ).update(
                             {Payment.staff_id: None},
                             synchronize_session=False
                         )
 
-                        obj = session.get(Staff, selected_id)
+                        obj = session.get(Staff, person.id)
+
                         if obj:
                             session.delete(obj)
                             session.commit()
@@ -2142,305 +2175,14 @@ elif page == tr("staff"):
                         st.success(tr("deleted"))
                         st.rerun()
 
+    else:
 
-    # ==================================================
-    # SEPARATE STAFF REMOVAL SECTION
-    # ==================================================
+        st.info("Nessuna persona registrata. / No staff members registered.")
 
-    st.divider()
-
-    with st.expander(
-        "🗑️ Remove staff member / Rimuovi una persona"
-    ):
-
-        st.warning(
-            "This removes the person from the active staff list only. "
-            "Attendance, payment history, uploaded documents and all "
-            "other records will be preserved. You can reactivate them later."
-            if language == "English"
-            else
-            "Questa operazione rimuove la persona solo dall'elenco attivo. "
-            "Presenze, pagamenti, documenti caricati e tutti gli altri "
-            "dati saranno conservati. Potrai riattivarla successivamente."
-        )
-
-        # Only show currently active staff.
-        removable_people = all_staff(active_only=True)
-
-        if removable_people:
-
-            remove_choices = {
-                f"{person.name} — {category_label(person.category)} (ID: {person.id})":
-                person.id
-                for person in removable_people
-            }
-
-            selected_label = st.selectbox(
-                "Select staff member / Seleziona persona",
-                list(remove_choices.keys()),
-                key="safe_staff_removal_choice_2"
-            )
-
-            confirm_removal = st.checkbox(
-                "I confirm that I want to remove this person "
-                "from the active staff list."
-                if language == "English"
-                else
-                "Confermo di voler rimuovere questa persona "
-                "dall'elenco del personale attivo.",
-                key="safe_staff_removal_confirmation"
-            )
-
-            if st.button(
-                "🗑️ Remove from active staff / Rimuovi dal personale attivo",
-                disabled=not confirm_removal,
-                type="primary",
-                key="safe_staff_removal_button"
-            ):
-
-                selected_id = remove_choices[selected_label]
-
-                with Session() as session:
-
-                    person = session.get(Staff, selected_id)
-
-                    if person and person.active == 1:
-
-                        # IMPORTANT: Only deactivate the staff member.
-                        # Do not delete attendance, payments or documents.
-                        person.active = 0
-
-                        session.commit()
-
-                        st.success(
-                            "Staff member successfully removed. "
-                            "All historical records are preserved."
-                            if language == "English"
-                            else
-                            "Persona rimossa correttamente. "
-                            "Tutti i dati storici sono stati conservati."
-                        )
-
-                    else:
-
-                        st.info(
-                            "This staff member is already inactive."
-                            if language == "English"
-                            else
-                            "Questa persona è già disattivata."
-                        )
-
-                st.rerun()
-
-        else:
-
-            st.info(
-                "There are no active staff members to remove."
-                if language == "English"
-                else
-                "Non ci sono persone attive da rimuovere."
-            )
-
-
-    st.divider()
-
-    with st.expander(
-        "🗑️ Remove staff member / Rimuovi una persona"
-    ):
-
-        st.warning(
-            "This removes the person from the active staff list only. "
-            "Attendance, payment history, uploaded documents and all "
-            "other records will be preserved. You can reactivate them later."
-            if language == "English"
-            else
-            "Questa operazione rimuove la persona solo dall'elenco attivo. "
-            "Presenze, pagamenti, documenti caricati e tutti gli altri "
-            "dati saranno conservati. Potrai riattivarla successivamente."
-        )
-
-        # Only show currently active staff.
-        removable_people = all_staff(active_only=True)
-
-        if removable_people:
-
-            remove_choices = {
-                f"{person.name} — {category_label(person.category)} (ID: {person.id})":
-                person.id
-                for person in removable_people
-            }
-
-            selected_label = st.selectbox(
-                "Select staff member / Seleziona persona",
-                 list(remove_choices.keys()),
-                 key="safe_staff_removal_choice_3"
-            )
-
-            confirm_removal = st.checkbox(
-                "I confirm that I want to remove this person "
-                "from the active staff list."
-                if language == "English"
-                else
-                "Confermo di voler rimuovere questa persona "
-                "dall'elenco del personale attivo.",
-                key="safe_staff_removal_confirmation_2"
-            )
-
-            if st.button(
-                "🗑️ Remove from active staff / Rimuovi dal personale attivo",
-                disabled=not confirm_removal,
-                type="primary",
-                key="safe_staff_removal_button_2"
-            ):
-
-                selected_id = remove_choices[selected_label]
-
-                with Session() as session:
-
-                    person = session.get(Staff, selected_id)
-
-                    if person and person.active == 1:
-
-                        # IMPORTANT: Only deactivate the staff member.
-                        # Do not delete attendance, payments or documents.
-                        person.active = 0
-
-                        session.commit()
-
-                        st.success(
-                            "Staff member successfully removed. "
-                            "All historical records are preserved."
-                            if language == "English"
-                            else
-                            "Persona rimossa correttamente. "
-                            "Tutti i dati storici sono stati conservati."
-                        )
-
-                    else:
-
-                        st.info(
-                            "This staff member is already inactive."
-                            if language == "English"
-                            else
-                            "Questa persona è già disattivata."
-                        )
-
-                st.rerun()
-
-        else:
-
-            st.info(
-                "There are no active staff members to remove."
-                if language == "English"
-                else
-                "Non ci sono persone attive da rimuovere."
-            )
-# ==================================================
-# SEPARATE STAFF REMOVAL SECTION
-# ==================================================
-
-    # ==================================================
-    # SEPARATE STAFF REMOVAL SECTION
-    # ==================================================
-
-    st.divider()
-
-    with st.expander(
-        "🗑️ Remove staff member / Rimuovi una persona"
-    ):
-
-        st.warning(
-            "This removes the person from the active staff list only. "
-            "Attendance, payment history, uploaded documents and all "
-            "other records will be preserved. You can reactivate them later."
-            if language == "English"
-            else
-            "Questa operazione rimuove la persona solo dall'elenco attivo. "
-            "Presenze, pagamenti, documenti caricati e tutti gli altri "
-            "dati saranno conservati. Potrai riattivarla successivamente."
-        )
-
-        # Only show currently active staff.
-        removable_people = all_staff(active_only=True)
-
-        if removable_people:
-
-            remove_choices = {
-                f"{person.name} — {category_label(person.category)} (ID: {person.id})":
-                person.id
-                for person in removable_people
-            }
-
-            selected_label = st.selectbox(
-                "Select staff member / Seleziona persona",
-                list(remove_choices.keys()),
-                key="safe_staff_removal_choice"
-            )
-
-            confirm_removal = st.checkbox(
-                "I confirm that I want to remove this person "
-                "from the active staff list."
-                if language == "English"
-                else
-                "Confermo di voler rimuovere questa persona "
-                "dall'elenco del personale attivo.",
-                key="safe_staff_removal_confirmation_3"
-            )
-
-            if st.button(
-                "🗑️ Remove from active staff / Rimuovi dal personale attivo",
-                disabled=not confirm_removal,
-                type="primary",
-                key="safe_staff_removal_button_3"
-            ):
-
-                selected_id = remove_choices[selected_label]
-
-                with Session() as session:
-
-                    person = session.get(Staff, selected_id)
-
-                    if person and person.active == 1:
-
-                        # IMPORTANT: Only deactivate the staff member.
-                        # Do not delete attendance, payments or documents.
-                        person.active = 0
-
-                        session.commit()
-
-                        st.success(
-                            "Staff member successfully removed. "
-                            "All historical records are preserved."
-                            if language == "English"
-                            else
-                            "Persona rimossa correttamente. "
-                            "Tutti i dati storici sono stati conservati."
-                        )
-
-                    else:
-
-                        st.info(
-                            "This staff member is already inactive."
-                            if language == "English"
-                            else
-                            "Questa persona è già disattivata."
-                        )
-
-                st.rerun()
-
-        else:
-
-            st.info(
-                "There are no active staff members to remove."
-                if language == "English"
-                else
-                "Non ci sono persone attive da rimuovere."
-            )
 
 # ==================================================
 # DAILY ATTENDANCE
 # ==================================================
-
 
 elif page == tr("record"):
 
