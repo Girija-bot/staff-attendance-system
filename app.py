@@ -593,7 +593,6 @@ with engine.begin() as connection:
 
 CATEGORIES = [
     "Officially registered",
-    "Not officially registered",
     "On-call staff",
     "Personale a chiamata full-time",
     "Personale a chiamata part-time",
@@ -603,9 +602,6 @@ CATEGORIES = [
 CATEGORY_IT = {
     "Officially registered":
         "Personale regolarmente assunto",
-
-    "Not officially registered":
-        "Personale non regolarmente registrato",
 
     "On-call staff":
         "Personale a chiamata",
