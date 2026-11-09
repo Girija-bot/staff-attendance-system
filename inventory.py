@@ -595,6 +595,139 @@ def render_inventory():
                     st.success("Articolo eliminato dal magazzino.")
                     st.rerun()
 
+            # --------------------------------------------------
+            # STOCK IN (RESTOCK): increase quantity, update cost, log CARICO
+            # --------------------------------------------------
+            with st.expander("📥 Registra carico (rientro merce)"):
+                st.caption(
+                    "Quando la merce torna in magazzino: la giacenza e "
+                    "l'ultimo costo unitario vengono aggiornati automaticamente."
+                )
+
+                product_cost_lookup = {
+                    p.id: float(p.unit_cost or 0) for p in products
+                }
+
+                with st.form("manual_stock_in_form", clear_on_submit=True):
+                    in_label = st.selectbox(
+                        "Articolo",
+                        list(product_choices.keys()),
+                        key="stock_in_product"
+                    )
+
+                    in_default_cost = product_cost_lookup[
+                        product_choices[in_label]
+                    ]
+
+                    ic1, ic2 = st.columns(2)
+
+                    in_quantity = ic1.number_input(
+                        "Quantità caricata",
+                        min_value=0.01, value=1.0, step=1.0
+                    )
+
+                    in_date = ic2.date_input(
+                        "Data carico", value=date.today(), format="DD/MM/YYYY"
+                    )
+
+                    in_unit_cost = st.number_input(
+                        "Costo unitario (€)",
+                        min_value=0.0,
+                        value=in_default_cost,
+                        step=0.01,
+                        format="%.2f",
+                        key="stock_in_unit_cost"
+                    )
+
+                    in_total = float(in_quantity) * float(in_unit_cost)
+
+                    st.info(
+                        f"Valore totale carico: {euro(in_total)} "
+                        f"({float(in_quantity):g} × {euro(float(in_unit_cost))})"
+                    )
+
+                    in_supplier = st.text_input("Fornitore")
+                    in_notes = st.text_area("Note (fattura, riferimento)")
+
+                    save_in = st.form_submit_button(
+                        "Registra carico", type="primary"
+                    )
+
+                if save_in:
+                    in_product_id = product_choices[in_label]
+
+                    with InventorySession() as session:
+                        product = session.get(Product, in_product_id)
+
+                        if not product:
+                            st.error("Articolo non trovato.")
+                        else:
+                            product.quantity = (
+                                float(product.quantity or 0)
+                                + float(in_quantity)
+                            )
+
+                            if float(in_unit_cost) > 0:
+                                product.unit_cost = float(in_unit_cost)
+
+                            if in_supplier.strip():
+                                product.supplier = in_supplier.strip()
+
+                            session.add(StockMovement(
+                                product_id=product.id,
+                                product_code=product.code,
+                                description=product.description,
+                                movement_date=in_date,
+                                movement_type="CARICO",
+                                quantity=float(in_quantity),
+                                destination="Magazzino",
+                                reference=in_supplier.strip(),
+                                unit_cost=float(in_unit_cost),
+                                notes=in_notes.strip()
+                            ))
+
+                            session.commit()
+
+                            st.success(
+                                f"Carico registrato. "
+                                f"Nuova giacenza: {product.quantity:g}."
+                            )
+                            st.rerun()
+
+            with st.expander("📜 Storico carichi"):
+                with InventorySession() as session:
+                    in_movements = session.query(StockMovement).filter(
+                        StockMovement.movement_type == "CARICO"
+                    ).order_by(
+                        StockMovement.movement_date.desc(),
+                        StockMovement.id.desc()
+                    ).all()
+
+                    in_rows = [{
+                        "Data": m.movement_date.strftime("%d/%m/%Y"),
+                        "Codice": m.product_code,
+                        "Articolo": m.description,
+                        "Quantità caricata": m.quantity,
+                        "Fornitore": m.reference,
+                        "Costo unitario (€)": round(m.unit_cost, 2),
+                        "Valore carico (€)": round(m.quantity * m.unit_cost, 2),
+                        "Note": m.notes
+                    } for m in in_movements]
+
+                if in_rows:
+                    in_df = pd.DataFrame(in_rows)
+
+                    st.metric(
+                        "Valore totale carichi",
+                        euro(float(in_df["Valore carico (€)"].sum()))
+                    )
+
+                    st.dataframe(
+                        in_df, use_container_width=True, hide_index=True
+                    )
+                else:
+                    st.info("Nessun carico registrato.")
+
         else:
             st.info("Nessun articolo registrato.")
                 # --------------------------------------------------
