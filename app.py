@@ -473,7 +473,7 @@ def run_one_time_staff_reset():
         connection.execute(text(
             "CREATE TABLE IF NOT EXISTS app_migrations ("
             "migration_key VARCHAR(100) PRIMARY KEY, "
-            "applied_at DATETIME NOT NULL)"
+            "applied_at TIMESTAMP NOT NULL)"
         ))
 
         already_applied = connection.execute(
