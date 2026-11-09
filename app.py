@@ -1237,12 +1237,15 @@ def render_staff_documents_for(selected_staff):
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
-        except Exception:
+        except Exception as upload_error:
+            import traceback
+            traceback.print_exc()  # appears in Render Logs
             st.error(
                 "Upload failed. Check the private storage configuration and try again."
                 if language == "English"
                 else "Caricamento non riuscito. Verifica la configurazione dell'archivio privato e riprova."
             )
+            st.exception(upload_error)  # shows the real error on screen
 
     st.markdown("**Stored documents / Documenti archiviati**")
     with Session() as session:
@@ -1897,7 +1900,9 @@ elif page == tr("staff"):
                                     else "Persona e documento salvati correttamente."
                                 )
 
-                            except Exception:
+                            except Exception as upload_error:
+                                import traceback
+                                traceback.print_exc()  # appears in Render Logs
                                 st.warning(
                                     "The staff member was saved, but the document "
                                     "upload failed. You can upload it later from "
@@ -1907,6 +1912,7 @@ elif page == tr("staff"):
                                          "del documento non è riuscito. Puoi caricarlo "
                                          "successivamente da Documenti del personale."
                                 )
+                                st.exception(upload_error)  # shows the real error on screen
 
                         else:
                             st.success(
