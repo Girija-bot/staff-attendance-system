@@ -191,6 +191,18 @@ def euro(value):
     return f"€ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def to_xlsx(df):
+    """Serialize a DataFrame to an .xlsx file for download."""
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Dati")
+
+    output.seek(0)
+
+    return output.getvalue()
+
+
 def line_totals(line):
     taxable = (
         line.quantity_ordered * line.unit_price
@@ -1169,7 +1181,12 @@ def render_expenses():
         df = pd.DataFrame(data)
         st.metric("Totale spese registrate", euro(float(df["Importo (€)"].sum())))
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("Scarica elenco spese CSV", df.to_csv(index=False).encode("utf-8-sig"), file_name="elenco_spese.csv", mime="text/csv")
+        st.download_button(
+            "Scarica elenco spese Excel",
+            data=to_xlsx(df),
+            file_name="elenco_spese.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     else:
         st.info("Nessuna spesa registrata.")
 
@@ -1264,6 +1281,11 @@ def render_stock_outflow():
             euro(float(df["Valore scarico (€)"].sum()))
         )
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("Scarica scarichi CSV", df.to_csv(index=False).encode("utf-8-sig"), file_name="elenco_scarico_magazzino.csv", mime="text/csv")
+        st.download_button(
+            "Scarica scarichi Excel",
+            data=to_xlsx(df),
+            file_name="elenco_scarico_magazzino.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     else:
         st.info("Nessuno scarico registrato.")

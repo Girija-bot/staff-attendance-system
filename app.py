@@ -1635,15 +1635,14 @@ if page == "Pagamenti":
             hide_index=True
         )
 
-        csv_payments = history_df.to_csv(
-            index=False
-        ).encode("utf-8-sig")
-
         st.download_button(
-            "📥 Scarica storico pagamenti CSV",
-            data=csv_payments,
-            file_name="storico_pagamenti.csv",
-            mime="text/csv"
+            "📥 Scarica storico pagamenti Excel",
+            data=make_excel(history_df),
+            file_name="storico_pagamenti.xlsx",
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            )
         )
 
     else:
@@ -2550,8 +2549,26 @@ elif page == tr("weekly"):
                 height=350
             )
 
-            st.bar_chart(
-                display_hours.set_index(tr("name"))[tr("hours")]
+            import altair as alt
+
+            hours_chart = (
+                alt.Chart(display_hours)
+                .mark_bar()
+                .encode(
+                    x=alt.X(f"{tr('hours')}:Q", title=tr("hours")),
+                    y=alt.Y(
+                        f"{tr('name')}:N",
+                        sort="-x",
+                        title=None,
+                    ),
+                )
+                .properties(
+                    height=max(120, 26 * len(display_hours))
+                )
+            )
+
+            st.altair_chart(
+                hours_chart, use_container_width=True
             )
 
         # ATTENDANCE DETAILS
@@ -2570,10 +2587,6 @@ elif page == tr("weekly"):
 
         # EXPORT CSV AND EXCEL
 
-        csv_data = report_df.to_csv(
-            index=False
-        ).encode("utf-8-sig")
-
         filename_prefix = (
             "attendance"
             if language == "English"
@@ -2582,16 +2595,7 @@ elif page == tr("weekly"):
 
         date_suffix = f"{start_date}_{end_date}"
 
-        col1, col2 = st.columns(2)
-
-        col1.download_button(
-            tr("csv"),
-            data=csv_data,
-            file_name=f"{filename_prefix}_{date_suffix}.csv",
-            mime="text/csv"
-        )
-
-        col2.download_button(
+        st.download_button(
             tr("excel"),
             data=make_excel(report_df),
             file_name=f"{filename_prefix}_{date_suffix}.xlsx",
