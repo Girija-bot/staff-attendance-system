@@ -597,6 +597,10 @@ CATEGORIES = [
     "Personale a chiamata full-time",
     "Personale a chiamata part-time",
     "Personale a chiamata partita IVA",
+    "Cantiere",
+    "Architetto",
+    "Archivio",
+    "Ex ufficiali",
 ]
 
 CATEGORY_IT = {
@@ -614,6 +618,18 @@ CATEGORY_IT = {
 
     "Personale a chiamata partita IVA":
         "Personale a chiamata partita IVA",
+
+    "Cantiere":
+        "Cantiere",
+
+    "Architetto":
+        "Architetto",
+
+    "Archivio":
+        "Archivio",
+
+    "Ex ufficiali":
+        "Ex ufficiali",
 }
 
 
@@ -1237,15 +1253,12 @@ def render_staff_documents_for(selected_staff):
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
-        except Exception as upload_error:
-            import traceback
-            traceback.print_exc()  # appears in Render Logs
+        except Exception:
             st.error(
                 "Upload failed. Check the private storage configuration and try again."
                 if language == "English"
                 else "Caricamento non riuscito. Verifica la configurazione dell'archivio privato e riprova."
             )
-            st.exception(upload_error)  # shows the real error on screen
 
     st.markdown("**Stored documents / Documenti archiviati**")
     with Session() as session:
@@ -1900,9 +1913,7 @@ elif page == tr("staff"):
                                     else "Persona e documento salvati correttamente."
                                 )
 
-                            except Exception as upload_error:
-                                import traceback
-                                traceback.print_exc()  # appears in Render Logs
+                            except Exception:
                                 st.warning(
                                     "The staff member was saved, but the document "
                                     "upload failed. You can upload it later from "
@@ -1912,7 +1923,6 @@ elif page == tr("staff"):
                                          "del documento non è riuscito. Puoi caricarlo "
                                          "successivamente da Documenti del personale."
                                 )
-                                st.exception(upload_error)  # shows the real error on screen
 
                         else:
                             st.success(
@@ -2446,6 +2456,103 @@ elif page == tr("weekly"):
             use_container_width=True,
             hide_index=True
         )
+
+        # ==================================================
+        # HOURS WORKED PER PERSON (addition)
+        # ==================================================
+
+        st.markdown(
+            "### 👷 Ore lavorate per persona / Hours worked per person"
+        )
+
+        st.caption(
+            "Solo le presenze (Presente / Chiamato - presente) "
+            "vengono conteggiate nelle ore."
+            if language == "Italiano"
+            else "Only attended records (Present / Called in - attended) "
+                 "count towards the hours."
+        )
+
+        attended_df = df[
+            df["status"].isin([
+                "Present",
+                "Called in - attended"
+            ])
+        ].copy()
+
+        if attended_df.empty:
+
+            st.info(
+                "Nessuna presenza registrata in questo periodo."
+                if language == "Italiano"
+                else "No attended records in this period."
+            )
+
+        else:
+
+            person_hours = (
+                attended_df
+                .groupby(["name", "category"], as_index=False)
+                .agg(days=("work_date", "nunique"), hours=("hours", "sum"))
+            )
+
+            person_hours["hours"] = person_hours["hours"].round(2)
+
+            person_hours["category"] = (
+                person_hours["category"].apply(category_label)
+            )
+
+            person_hours = person_hours.sort_values(
+                "hours", ascending=False
+            )
+
+            all_people_label = (
+                "Tutte le persone"
+                if language == "Italiano"
+                else "All people"
+            )
+
+            person_filter = st.selectbox(
+                "Filtra per persona / Filter by person",
+                [all_people_label] + person_hours["name"].tolist(),
+                key="person_hours_filter"
+            )
+
+            shown = (
+                person_hours
+                if person_filter == all_people_label
+                else person_hours[person_hours["name"] == person_filter]
+            )
+
+            total_col1, total_col2 = st.columns(2)
+
+            total_col1.metric(
+                "Giornate totali / Total days",
+                int(shown["days"].sum())
+            )
+
+            total_col2.metric(
+                tr("hours"),
+                f"{shown['hours'].sum():.2f}"
+            )
+
+            display_hours = shown.rename(columns={
+                "name": tr("name"),
+                "category": tr("category"),
+                "days": "Giornate / Days",
+                "hours": tr("hours"),
+            })
+
+            st.dataframe(
+                display_hours,
+                use_container_width=True,
+                hide_index=True,
+                height=350
+            )
+
+            st.bar_chart(
+                display_hours.set_index(tr("name"))[tr("hours")]
+            )
 
         # ATTENDANCE DETAILS
 
