@@ -1115,6 +1115,15 @@ def display_dataframe(df):
         tr("notes"),
     ]]
 
+    # Show dates as DD/MM/YYYY (day, month, year).
+    result[tr("work_date")] = result[tr("work_date")].apply(
+        lambda value: (
+            value.strftime("%d/%m/%Y")
+            if hasattr(value, "strftime")
+            else str(value)
+        )
+    )
+
     return result
 
 
