@@ -170,6 +170,11 @@ class Staff(Base):
         nullable=True
     )
 
+    daily_rate: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True
+    )
+
     codice_fiscale: Mapped[str | None] = mapped_column(
         String(20),
         nullable=True
@@ -555,6 +560,7 @@ attendance_columns = {
 
 staff_new_columns = {
     "partita_iva": "VARCHAR(30)",
+    "daily_rate": "FLOAT",
     "codice_fiscale": "VARCHAR(20)",
     "email": "VARCHAR(150)",
     "phone": "VARCHAR(30)",
@@ -1753,6 +1759,15 @@ elif page == tr("staff"):
                 max_chars=30
             )
 
+            daily_rate_input = st.number_input(
+                "Paga giornaliera (€) / Daily rate",
+                min_value=0.0,
+                value=0.0,
+                step=0.01,
+                format="%.2f",
+                help="Importo pagato per ogni giornata lavorata / Amount paid per worked day"
+            )
+
             codice_fiscale = st.text_input(
                 tr("tax_code"),
                 max_chars=20
@@ -1836,6 +1851,11 @@ elif page == tr("staff"):
                                 name=name.strip(),
                                 category=category,
                                 partita_iva=partita_iva.strip() or None,
+                                daily_rate=(
+                                    float(daily_rate_input)
+                                    if daily_rate_input > 0
+                                    else None
+                                ),
                                 codice_fiscale=codice_fiscale.strip() or None,
                                 email=email.strip() or None,
                                 phone=phone.strip() or None,
@@ -1946,6 +1966,11 @@ elif page == tr("staff"):
                 tr("name"): person.name,
                 tr("category"): category_label(person.category),
                 tr("vat"): person.partita_iva or "",
+                "Paga giornaliera (€)": (
+                    f"{float(person.daily_rate):.2f}"
+                    if person.daily_rate
+                    else ""
+                ),
                 tr("tax_code"): person.codice_fiscale or "",
                 tr("email"): person.email or "",
                 tr("phone"): person.phone or "",
@@ -2036,6 +2061,15 @@ elif page == tr("staff"):
                         key=f"vat_{person.id}"
                     )
 
+                    new_daily_rate = st.number_input(
+                        "Paga giornaliera (€) / Daily rate",
+                        min_value=0.0,
+                        value=float(person.daily_rate or 0),
+                        step=0.01,
+                        format="%.2f",
+                        key=f"daily_rate_{person.id}"
+                    )
+
                     new_tax_code = st.text_input(
                         tr("tax_code"),
                         value=person.codice_fiscale or "",
@@ -2121,6 +2155,11 @@ elif page == tr("staff"):
                                     obj.name = new_name.strip()
                                     obj.category = new_category
                                     obj.partita_iva = new_vat.strip() or None
+                                    obj.daily_rate = (
+                                        float(new_daily_rate)
+                                        if new_daily_rate > 0
+                                        else None
+                                    )
                                     obj.codice_fiscale = new_tax_code.strip() or None
                                     obj.email = new_email.strip() or None
                                     obj.phone = new_phone.strip() or None
@@ -2465,11 +2504,13 @@ elif page == tr("weekly"):
         )
 
         st.caption(
-            "Solo le presenze (Presente / Chiamato - presente) "
-            "vengono conteggiate nelle ore."
+            "Solo le presenze (Presente / Chiamato - presente) vengono "
+            "conteggiate. Il totale da pagare = giornate lavorate × paga "
+            "giornaliera (impostata in Gestione del personale)."
             if language == "Italiano"
             else "Only attended records (Present / Called in - attended) "
-                 "count towards the hours."
+                 "count. Total to pay = worked days × daily rate "
+                 "(set in Staff management)."
         )
 
         attended_df = df[
@@ -2491,11 +2532,34 @@ elif page == tr("weekly"):
 
             person_hours = (
                 attended_df
-                .groupby(["name", "category"], as_index=False)
+                .groupby(
+                    ["staff_id", "name", "category"],
+                    as_index=False
+                )
                 .agg(days=("work_date", "nunique"), hours=("hours", "sum"))
             )
 
             person_hours["hours"] = person_hours["hours"].round(2)
+
+            with Session() as rate_session:
+                rate_rows = rate_session.query(
+                    Staff.id, Staff.daily_rate
+                ).all()
+
+            rate_map = {
+                row[0]: float(row[1] or 0) for row in rate_rows
+            }
+
+            person_hours["daily_rate"] = (
+                person_hours["staff_id"]
+                .map(rate_map)
+                .fillna(0.0)
+                .round(2)
+            )
+
+            person_hours["to_pay"] = (
+                person_hours["days"] * person_hours["daily_rate"]
+            ).round(2)
 
             person_hours["category"] = (
                 person_hours["category"].apply(category_label)
@@ -2523,7 +2587,7 @@ elif page == tr("weekly"):
                 else person_hours[person_hours["name"] == person_filter]
             )
 
-            total_col1, total_col2 = st.columns(2)
+            total_col1, total_col2, total_col3 = st.columns(3)
 
             total_col1.metric(
                 "Giornate totali / Total days",
@@ -2535,12 +2599,26 @@ elif page == tr("weekly"):
                 f"{shown['hours'].sum():.2f}"
             )
 
+            total_col3.metric(
+                "Totale da pagare (€)",
+                f"{shown['to_pay'].sum():.2f}"
+            )
+
             display_hours = shown.rename(columns={
                 "name": tr("name"),
                 "category": tr("category"),
                 "days": "Giornate / Days",
                 "hours": tr("hours"),
-            })
+                "daily_rate": "Paga giornaliera (€)",
+                "to_pay": "Da pagare (€)",
+            })[[
+                tr("name"),
+                tr("category"),
+                "Giornate / Days",
+                tr("hours"),
+                "Paga giornaliera (€)",
+                "Da pagare (€)",
+            ]]
 
             st.dataframe(
                 display_hours,
