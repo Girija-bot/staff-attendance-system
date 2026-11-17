@@ -149,6 +149,8 @@ class Expense(InventoryBase):
     description: Mapped[str] = mapped_column(String(300), nullable=False)
     supplier: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    unit_price: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     payment_method: Mapped[str] = mapped_column(String(100), default="", nullable=False)
     payment_status: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -189,6 +191,18 @@ if "payment_status" not in {c["name"] for c in inspect(engine).get_columns("inve
     with engine.begin() as connection:
         connection.execute(sql_text(
             "ALTER TABLE inventory_expenses ADD COLUMN payment_status VARCHAR(20) NOT NULL DEFAULT ''"
+        ))
+
+if "quantity" not in {c["name"] for c in inspect(engine).get_columns("inventory_expenses")}:
+    with engine.begin() as connection:
+        connection.execute(sql_text(
+            "ALTER TABLE inventory_expenses ADD COLUMN quantity FLOAT NOT NULL DEFAULT 0"
+        ))
+
+if "unit_price" not in {c["name"] for c in inspect(engine).get_columns("inventory_expenses")}:
+    with engine.begin() as connection:
+        connection.execute(sql_text(
+            "ALTER TABLE inventory_expenses ADD COLUMN unit_price FLOAT NOT NULL DEFAULT 0"
         ))
 
 
@@ -1242,6 +1256,14 @@ def render_expenses():
                         description=expense_description.strip(),
                         supplier=expense_supplier.strip(),
                         amount=float(final_amount),
+                        quantity=(
+                            float(expense_qty) if expense_qty > 0 else 0.0
+                        ),
+                        unit_price=(
+                            float(expense_unit_price)
+                            if expense_unit_price > 0
+                            else 0.0
+                        ),
                         payment_method=expense_payment,
                         payment_status=expense_status,
                         notes=final_notes
@@ -1257,6 +1279,10 @@ def render_expenses():
             "Categoria": x.category,
             "Descrizione": x.description,
             "Fornitore": x.supplier,
+            "Quantità": f"{x.quantity:g}" if x.quantity else "",
+            "Prezzo unitario (€)": (
+                round(x.unit_price, 3) if x.unit_price else ""
+            ),
             "Importo (€)": round(x.amount, 2),
             "Pagamento": x.payment_method,
             "Stato": expense_status_label(x),
@@ -1369,6 +1395,25 @@ def render_expenses():
                     key=f"edit_expense_amount_{selected_expense_id}"
                 )
 
+                ec5, ec6 = st.columns(2)
+
+                edit_qty = ec5.number_input(
+                    "Quantità",
+                    min_value=0.0,
+                    value=float(expense_to_edit.quantity or 0),
+                    step=1.0,
+                    key=f"edit_expense_qty_{selected_expense_id}"
+                )
+
+                edit_unit_price = ec6.number_input(
+                    "Prezzo unitario (€)",
+                    min_value=0.0,
+                    value=float(expense_to_edit.unit_price or 0),
+                    step=0.001,
+                    format="%.3f",
+                    key=f"edit_expense_price_{selected_expense_id}"
+                )
+
                 current_payment = (
                     expense_to_edit.payment_method
                     if expense_to_edit.payment_method in PAYMENT_OPTIONS
@@ -1419,6 +1464,8 @@ def render_expenses():
                     expense_to_edit.description = edit_description.strip()
                     expense_to_edit.supplier = edit_supplier.strip()
                     expense_to_edit.amount = float(edit_amount)
+                    expense_to_edit.quantity = float(edit_qty)
+                    expense_to_edit.unit_price = float(edit_unit_price)
                     expense_to_edit.payment_method = edit_payment
                     expense_to_edit.payment_status = edit_status
                     expense_to_edit.notes = edit_notes.strip()
