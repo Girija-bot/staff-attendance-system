@@ -1149,9 +1149,9 @@ def render_expenses():
             "Prezzo unitario (€)",
             min_value=0.0,
             value=0.0,
-            step=0.01,
-            format="%.2f",
-            help="Es. 1,50 per un paio di guanti"
+            step=0.001,
+            format="%.3f",
+            help="Anche con 3 decimali, es. 29,508"
         )
 
         computed_amount = round(
