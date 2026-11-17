@@ -150,6 +150,7 @@ class Expense(InventoryBase):
     supplier: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     payment_method: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    payment_status: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
     purchase_id: Mapped[int | None] = mapped_column(
         ForeignKey("inventory_purchases.id", ondelete="SET NULL"), nullable=True
@@ -184,11 +185,33 @@ if "unit_cost" not in {c["name"] for c in inspect(engine).get_columns("inventory
             "ALTER TABLE inventory_products ADD COLUMN unit_cost FLOAT NOT NULL DEFAULT 0"
         ))
 
+if "payment_status" not in {c["name"] for c in inspect(engine).get_columns("inventory_expenses")}:
+    with engine.begin() as connection:
+        connection.execute(sql_text(
+            "ALTER TABLE inventory_expenses ADD COLUMN payment_status VARCHAR(20) NOT NULL DEFAULT ''"
+        ))
+
 
 # UTILITY FUNCTIONS
 
 def euro(value):
     return f"€ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def expense_status_label(x):
+    """Return Pagata / Non pagata; for old records, guess from the note text."""
+    if getattr(x, "payment_status", ""):
+        return x.payment_status
+
+    note = (x.notes or "").lower()
+
+    if "non pagata" in note or "da pagare" in note:
+        return "Non pagata"
+
+    if "pagata" in note or "pagato" in note:
+        return "Pagata"
+
+    return ""
 
 
 def to_xlsx(df):
@@ -1178,6 +1201,11 @@ def render_expenses():
                 help="Se imposti quantità e prezzo unitario, si compila da solo"
             )
             expense_payment = st.selectbox("Metodo di pagamento", ["", "Bonifico", "Contanti", "Carta", "Altro"])
+            expense_status = st.selectbox(
+                "Stato pagamento",
+                ["", "Non pagata", "Pagata"],
+                help="Serve per i totali 'pagato' e 'da pagare'"
+            )
             expense_notes = st.text_area("Note")
             save_expense = st.form_submit_button("Salva spesa", type="primary")
         if save_expense:
@@ -1215,6 +1243,7 @@ def render_expenses():
                         supplier=expense_supplier.strip(),
                         amount=float(final_amount),
                         payment_method=expense_payment,
+                        payment_status=expense_status,
                         notes=final_notes
                     ))
                     session.commit()
@@ -1230,11 +1259,36 @@ def render_expenses():
             "Fornitore": x.supplier,
             "Importo (€)": round(x.amount, 2),
             "Pagamento": x.payment_method,
+            "Stato": expense_status_label(x),
             "Note": x.notes
         } for x in rows]
     if data:
         df = pd.DataFrame(data)
-        st.metric("Totale spese registrate", euro(float(df["Importo (€)"].sum())))
+
+        paid_df = df[df["Stato"] == "Pagata"]
+        unpaid_df = df[df["Stato"] == "Non pagata"]
+
+        sum_col1, sum_col2, sum_col3 = st.columns(3)
+
+        sum_col1.metric(
+            "Totale spese registrate",
+            euro(float(df["Importo (€)"].sum()))
+        )
+
+        sum_col2.metric(
+            "✅ Totale pagato",
+            euro(float(paid_df["Importo (€)"].sum()))
+            if not paid_df.empty
+            else euro(0)
+        )
+
+        sum_col3.metric(
+            "⏳ Totale da pagare",
+            euro(float(unpaid_df["Importo (€)"].sum()))
+            if not unpaid_df.empty
+            else euro(0)
+        )
+
         st.dataframe(df, use_container_width=True, hide_index=True)
 
         # --------------------------------------------------
@@ -1328,6 +1382,21 @@ def render_expenses():
                     key=f"edit_expense_pay_{selected_expense_id}"
                 )
 
+                STATUS_OPTIONS = ["", "Non pagata", "Pagata"]
+
+                current_status = (
+                    expense_to_edit.payment_status
+                    if expense_to_edit.payment_status in STATUS_OPTIONS
+                    else ""
+                )
+
+                edit_status = st.selectbox(
+                    "Stato pagamento",
+                    STATUS_OPTIONS,
+                    index=STATUS_OPTIONS.index(current_status),
+                    key=f"edit_expense_status_{selected_expense_id}"
+                )
+
                 edit_notes = st.text_area(
                     "Note",
                     value=expense_to_edit.notes or "",
@@ -1351,6 +1420,7 @@ def render_expenses():
                     expense_to_edit.supplier = edit_supplier.strip()
                     expense_to_edit.amount = float(edit_amount)
                     expense_to_edit.payment_method = edit_payment
+                    expense_to_edit.payment_status = edit_status
                     expense_to_edit.notes = edit_notes.strip()
 
                     session.commit()
