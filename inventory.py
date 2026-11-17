@@ -1135,6 +1135,31 @@ def render_expenses():
     st.caption("Acquisti registrati dai fornitori e altre spese aziendali.")
 
     with st.expander("Registra una nuova spesa", expanded=True):
+        qc1, qc2, qc3 = st.columns(3)
+
+        expense_qty = qc1.number_input(
+            "Quantità (0 = inserire solo il totale)",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+            help="Es. 12 per 12 paia di guanti"
+        )
+
+        expense_unit_price = qc2.number_input(
+            "Prezzo unitario (€)",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            format="%.2f",
+            help="Es. 1,50 per un paio di guanti"
+        )
+
+        computed_amount = round(
+            float(expense_qty) * float(expense_unit_price), 2
+        )
+
+        qc3.metric("Totale calcolato", euro(computed_amount))
+
         with st.form("manual_expense_form", clear_on_submit=True):
             c1, c2 = st.columns(2)
             expense_date = c1.date_input("Data", value=date.today(), format="DD/MM/YYYY")
@@ -1144,12 +1169,42 @@ def render_expenses():
             expense_description = st.text_input("Descrizione *")
             c3, c4 = st.columns(2)
             expense_supplier = c3.text_input("Fornitore")
-            expense_amount = c4.number_input("Importo (€)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+            expense_amount = c4.number_input(
+                "Importo (€)",
+                min_value=0.0,
+                value=computed_amount,
+                step=0.01,
+                format="%.2f",
+                help="Se imposti quantità e prezzo unitario, si compila da solo"
+            )
             expense_payment = st.selectbox("Metodo di pagamento", ["", "Bonifico", "Contanti", "Carta", "Altro"])
             expense_notes = st.text_area("Note")
             save_expense = st.form_submit_button("Salva spesa", type="primary")
         if save_expense:
-            if not expense_description.strip() or expense_amount <= 0:
+            use_calculated = (
+                expense_qty > 0 and expense_unit_price > 0
+            )
+
+            final_amount = (
+                computed_amount if use_calculated
+                else float(expense_amount)
+            )
+
+            final_notes = expense_notes.strip()
+
+            if use_calculated:
+                calc_note = (
+                    f"{expense_qty:g} pz × {expense_unit_price:.2f} € "
+                    f"= {computed_amount:.2f} €"
+                )
+
+                final_notes = (
+                    f"{final_notes} — {calc_note}"
+                    if final_notes
+                    else calc_note
+                )
+
+            if not expense_description.strip() or final_amount <= 0:
                 st.error("Inserisci una descrizione e un importo maggiore di zero.")
             else:
                 with InventorySession() as session:
@@ -1158,9 +1213,9 @@ def render_expenses():
                         category=expense_category,
                         description=expense_description.strip(),
                         supplier=expense_supplier.strip(),
-                        amount=float(expense_amount),
+                        amount=float(final_amount),
                         payment_method=expense_payment,
-                        notes=expense_notes.strip()
+                        notes=final_notes
                     ))
                     session.commit()
                 st.success("Spesa registrata.")
@@ -1181,6 +1236,153 @@ def render_expenses():
         df = pd.DataFrame(data)
         st.metric("Totale spese registrate", euro(float(df["Importo (€)"].sum())))
         st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # --------------------------------------------------
+        # EDIT OR DELETE AN EXISTING EXPENSE (addition)
+        # --------------------------------------------------
+        st.divider()
+        st.subheader("Modifica o elimina una spesa")
+
+        expense_choices = {
+            f"{x.expense_date:%d/%m/%Y} — {x.description} — "
+            f"{euro(x.amount)} (ID {x.id})": x.id
+            for x in rows
+        }
+
+        selected_expense_label = st.selectbox(
+            "Seleziona una spesa (data — descrizione — importo)",
+            list(expense_choices.keys()),
+            key="manage_expense_choice"
+        )
+
+        selected_expense_id = expense_choices[selected_expense_label]
+
+        EXPENSE_CATEGORIES = [
+            "Generale", "Trasporto", "Ufficio",
+            "Manutenzione", "Servizi", "Altro"
+        ]
+
+        PAYMENT_OPTIONS = ["", "Bonifico", "Contanti", "Carta", "Altro"]
+
+        with InventorySession() as session:
+            expense_to_edit = session.get(Expense, selected_expense_id)
+
+            with st.form(f"edit_expense_form_{selected_expense_id}"):
+                st.markdown("**Modifica spesa selezionata**")
+
+                ec1, ec2 = st.columns(2)
+
+                edit_date = ec1.date_input(
+                    "Data",
+                    value=expense_to_edit.expense_date,
+                    format="DD/MM/YYYY",
+                    key=f"edit_expense_date_{selected_expense_id}"
+                )
+
+                current_category = (
+                    expense_to_edit.category
+                    if expense_to_edit.category in EXPENSE_CATEGORIES
+                    else "Generale"
+                )
+
+                edit_category = ec2.selectbox(
+                    "Categoria",
+                    EXPENSE_CATEGORIES,
+                    index=EXPENSE_CATEGORIES.index(current_category),
+                    key=f"edit_expense_cat_{selected_expense_id}"
+                )
+
+                edit_description = st.text_input(
+                    "Descrizione *",
+                    value=expense_to_edit.description,
+                    key=f"edit_expense_desc_{selected_expense_id}"
+                )
+
+                ec3, ec4 = st.columns(2)
+
+                edit_supplier = ec3.text_input(
+                    "Fornitore",
+                    value=expense_to_edit.supplier or "",
+                    key=f"edit_expense_sup_{selected_expense_id}"
+                )
+
+                edit_amount = ec4.number_input(
+                    "Importo (€)",
+                    min_value=0.0,
+                    value=float(expense_to_edit.amount),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"edit_expense_amount_{selected_expense_id}"
+                )
+
+                current_payment = (
+                    expense_to_edit.payment_method
+                    if expense_to_edit.payment_method in PAYMENT_OPTIONS
+                    else ""
+                )
+
+                edit_payment = st.selectbox(
+                    "Metodo di pagamento",
+                    PAYMENT_OPTIONS,
+                    index=PAYMENT_OPTIONS.index(current_payment),
+                    key=f"edit_expense_pay_{selected_expense_id}"
+                )
+
+                edit_notes = st.text_area(
+                    "Note",
+                    value=expense_to_edit.notes or "",
+                    key=f"edit_expense_notes_{selected_expense_id}"
+                )
+
+                save_expense_changes = st.form_submit_button(
+                    "Salva modifiche spesa",
+                    type="primary"
+                )
+
+            if save_expense_changes:
+                if not edit_description.strip() or edit_amount <= 0:
+                    st.error(
+                        "Inserisci una descrizione e un importo maggiore di zero."
+                    )
+                else:
+                    expense_to_edit.expense_date = edit_date
+                    expense_to_edit.category = edit_category
+                    expense_to_edit.description = edit_description.strip()
+                    expense_to_edit.supplier = edit_supplier.strip()
+                    expense_to_edit.amount = float(edit_amount)
+                    expense_to_edit.payment_method = edit_payment
+                    expense_to_edit.notes = edit_notes.strip()
+
+                    session.commit()
+                    st.success("Spesa modificata correttamente.")
+                    st.rerun()
+
+        with st.expander("Elimina spesa selezionata"):
+            st.warning(
+                "La spesa verrà eliminata definitivamente. "
+                "Questa operazione non può essere annullata."
+            )
+
+            confirm_expense_delete = st.checkbox(
+                "Confermo di voler eliminare questa spesa",
+                key=f"confirm_expense_delete_{selected_expense_id}"
+            )
+
+            if st.button(
+                "Elimina spesa",
+                key=f"delete_expense_{selected_expense_id}",
+                disabled=not confirm_expense_delete
+            ):
+                with InventorySession() as session:
+                    expense = session.get(Expense, selected_expense_id)
+
+                    if expense:
+                        session.delete(expense)
+                        session.commit()
+
+                st.success("Spesa eliminata.")
+                st.rerun()
+
         st.download_button(
             "Scarica elenco spese Excel",
             data=to_xlsx(df),
