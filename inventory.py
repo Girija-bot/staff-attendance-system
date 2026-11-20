@@ -417,22 +417,10 @@ def render_inventory():
         st.subheader("Articoli in magazzino")
 
         with st.form("nuovo_articolo", clear_on_submit=True):
-            c1, c2 = st.columns(2)
+            descrizione = st.text_input("Descrizione *")
 
-            codice = c1.text_input("Codice articolo *")
-            descrizione = c2.text_input("Descrizione *")
-
-            c3, c4 = st.columns(2)
-
-            quantita = c3.number_input(
+            quantita = st.number_input(
                 "Quantità attualmente disponibile",
-                min_value=0.0,
-                value=0.0,
-                step=1.0
-            )
-
-            minimo = c4.number_input(
-                "Scorta minima",
                 min_value=0.0,
                 value=0.0,
                 step=1.0
@@ -453,32 +441,22 @@ def render_inventory():
             )
 
         if salva_articolo:
-            if not codice.strip() or not descrizione.strip():
-                st.error("Inserisci il codice e la descrizione.")
+            if not descrizione.strip():
+                st.error("Inserisci la descrizione.")
             else:
                 with InventorySession() as session:
-                    exists = session.query(Product).filter(
-                        func.lower(Product.code) == codice.strip().lower()
-                    ).first()
+                    session.add(Product(
+                        code=f"ART-{uuid.uuid4().hex[:6].upper()}",
+                        description=descrizione.strip(),
+                        quantity=quantita,
+                        location=ubicazione.strip(),
+                        supplier=fornitore.strip(),
+                        unit_cost=costo_unitario
+                    ))
 
-                    if exists:
-                        st.error(
-                            "Questo codice esiste già. Usa un codice diverso."
-                        )
-                    else:
-                        session.add(Product(
-                            code=codice.strip(),
-                            description=descrizione.strip(),
-                            quantity=quantita,
-                            min_quantity=minimo,
-                            location=ubicazione.strip(),
-                            supplier=fornitore.strip(),
-                            unit_cost=costo_unitario
-                        ))
-
-                        session.commit()
-                        st.success("Articolo salvato.")
-                        st.rerun()
+                    session.commit()
+                    st.success("Articolo salvato.")
+                    st.rerun()
 
         st.divider()
         st.subheader("Elenco articoli")
@@ -491,7 +469,6 @@ def render_inventory():
                 "Codice": p.code,
                 "Descrizione": p.description,
                 "Giacenza": p.quantity,
-                "Scorta minima": p.min_quantity,
                 "Ubicazione": p.location,
                 "Fornitore": p.supplier,
                 "Ultimo costo unitario (€)": round(float(p.unit_cost or 0), 2)
@@ -509,17 +486,6 @@ def render_inventory():
                 hide_index=True
             )
 
-            low_stock = [
-                p for p in product_data
-                if p["Giacenza"] <= p["Scorta minima"]
-            ]
-
-            if low_stock:
-                st.warning(
-                    f"Attenzione: {len(low_stock)} articoli sono alla "
-                    "scorta minima o sotto la soglia."
-                )
-
             selected_product_label = st.selectbox(
                 "Seleziona un articolo da modificare o eliminare",
                 list(product_choices.keys()),
@@ -534,31 +500,15 @@ def render_inventory():
                 with st.form(f"edit_product_{selected_product_id}"):
                     st.markdown("**Modifica articolo selezionato**")
 
-                    ec1, ec2 = st.columns(2)
-
-                    edit_code = ec1.text_input(
-                        "Codice",
-                        value=selected_product.code
-                    )
-
-                    edit_description = ec2.text_input(
+                    edit_description = st.text_input(
                         "Descrizione",
                         value=selected_product.description
                     )
 
-                    ec3, ec4 = st.columns(2)
-
-                    edit_quantity = ec3.number_input(
+                    edit_quantity = st.number_input(
                         "Giacenza",
                         min_value=0.0,
                         value=float(selected_product.quantity),
-                        step=1.0
-                    )
-
-                    edit_minimum = ec4.number_input(
-                        "Scorta minima",
-                        min_value=0.0,
-                        value=float(selected_product.min_quantity),
                         step=1.0
                     )
 
@@ -586,30 +536,18 @@ def render_inventory():
                     )
 
                 if save_product_changes:
-                    if not edit_code.strip() or not edit_description.strip():
-                        st.error("Codice e descrizione sono obbligatori.")
+                    if not edit_description.strip():
+                        st.error("La descrizione è obbligatoria.")
                     else:
-                        duplicate = session.query(Product).filter(
-                            func.lower(Product.code) == edit_code.strip().lower(),
-                            Product.id != selected_product_id
-                        ).first()
+                        selected_product.description = edit_description.strip()
+                        selected_product.quantity = edit_quantity
+                        selected_product.location = edit_location.strip()
+                        selected_product.supplier = edit_supplier.strip()
+                        selected_product.unit_cost = edit_unit_cost
 
-                        if duplicate:
-                            st.error(
-                                "Un altro articolo usa già questo codice."
-                            )
-                        else:
-                            selected_product.code = edit_code.strip()
-                            selected_product.description = edit_description.strip()
-                            selected_product.quantity = edit_quantity
-                            selected_product.min_quantity = edit_minimum
-                            selected_product.location = edit_location.strip()
-                            selected_product.supplier = edit_supplier.strip()
-                            selected_product.unit_cost = edit_unit_cost
-
-                            session.commit()
-                            st.success("Articolo modificato.")
-                            st.rerun()
+                        session.commit()
+                        st.success("Articolo modificato.")
+                        st.rerun()
 
             with st.expander("Elimina articolo selezionato"):
                 st.warning(
@@ -657,32 +595,56 @@ def render_inventory():
                     p.id: float(p.unit_cost or 0) for p in products
                 }
 
-                with st.form("manual_stock_in_form", clear_on_submit=True):
-                    in_label = st.selectbox(
-                        "Articolo",
-                        list(product_choices.keys()),
-                        key="stock_in_product"
-                    )
+                product_stock_lookup = {
+                    p.id: float(p.quantity or 0) for p in products
+                }
 
-                    in_default_cost = product_cost_lookup[
-                        product_choices[in_label]
-                    ]
+                in_label = st.selectbox(
+                    "Articolo",
+                    list(product_choices.keys()),
+                    key="stock_in_product"
+                )
 
+                in_product_id = product_choices[in_label]
+
+                current_stock = product_stock_lookup[in_product_id]
+
+                with st.expander(
+                    "🧮 Calcolatore — giacenze e quanto manca "
+                    "(apri solo se serve)"
+                ):
                     ic1, ic2 = st.columns(2)
 
                     in_quantity = ic1.number_input(
-                        "Quantità caricata",
-                        min_value=0.01, value=1.0, step=1.0
+                        "Quantità caricata (ricevuta)",
+                        min_value=0.0, value=0.0, step=1.0,
+                        help="Quanto ne hai ricevuto ora, es. 100"
                     )
 
-                    in_date = ic2.date_input(
-                        "Data carico", value=date.today(), format="DD/MM/YYYY"
+                    in_ordered = ic2.number_input(
+                        "Quantità ordinata/attesa (0 = non serve)",
+                        min_value=0.0, value=0.0, step=1.0,
+                        help="Quanto hai ordinato in totale, es. 200"
+                    )
+
+                    new_stock = current_stock + float(in_quantity)
+
+                    still_needed = max(
+                        0.0, float(in_ordered) - float(in_quantity)
+                    )
+
+                    m1, m2, m3 = st.columns(3)
+
+                    m1.metric("Giacenza attuale", f"{current_stock:g}")
+                    m2.metric("Nuova giacenza", f"{new_stock:g}")
+                    m3.metric(
+                        "Ancora da ricevere", f"{still_needed:g}"
                     )
 
                     in_unit_cost = st.number_input(
                         "Costo unitario (€)",
                         min_value=0.0,
-                        value=in_default_cost,
+                        value=product_cost_lookup[in_product_id],
                         step=0.01,
                         format="%.2f",
                         key="stock_in_unit_cost"
@@ -692,10 +654,20 @@ def render_inventory():
 
                     st.info(
                         f"Valore totale carico: {euro(in_total)} "
-                        f"({float(in_quantity):g} × {euro(float(in_unit_cost))})"
+                        f"({float(in_quantity):g} × "
+                        f"{euro(float(in_unit_cost))})"
                     )
 
-                    in_supplier = st.text_input("Fornitore")
+                with st.form("manual_stock_in_form", clear_on_submit=True):
+                    ic3, ic4 = st.columns(2)
+
+                    in_date = ic3.date_input(
+                        "Data carico",
+                        value=date.today(),
+                        format="DD/MM/YYYY"
+                    )
+
+                    in_supplier = ic4.text_input("Fornitore")
                     in_notes = st.text_area("Note (fattura, riferimento)")
 
                     save_in = st.form_submit_button(
@@ -703,45 +675,46 @@ def render_inventory():
                     )
 
                 if save_in:
-                    in_product_id = product_choices[in_label]
+                    if in_quantity <= 0:
+                        st.error("Inserisci la quantità caricata.")
+                    else:
+                        with InventorySession() as session:
+                            product = session.get(Product, in_product_id)
 
-                    with InventorySession() as session:
-                        product = session.get(Product, in_product_id)
+                            if not product:
+                                st.error("Articolo non trovato.")
+                            else:
+                                product.quantity = (
+                                    float(product.quantity or 0)
+                                    + float(in_quantity)
+                                )
 
-                        if not product:
-                            st.error("Articolo non trovato.")
-                        else:
-                            product.quantity = (
-                                float(product.quantity or 0)
-                                + float(in_quantity)
-                            )
+                                if float(in_unit_cost) > 0:
+                                    product.unit_cost = float(in_unit_cost)
 
-                            if float(in_unit_cost) > 0:
-                                product.unit_cost = float(in_unit_cost)
+                                if in_supplier.strip():
+                                    product.supplier = in_supplier.strip()
 
-                            if in_supplier.strip():
-                                product.supplier = in_supplier.strip()
+                                session.add(StockMovement(
+                                    product_id=product.id,
+                                    product_code=product.code,
+                                    description=product.description,
+                                    movement_date=in_date,
+                                    movement_type="CARICO",
+                                    quantity=float(in_quantity),
+                                    destination="Magazzino",
+                                    reference=in_supplier.strip(),
+                                    unit_cost=float(in_unit_cost),
+                                    notes=in_notes.strip()
+                                ))
 
-                            session.add(StockMovement(
-                                product_id=product.id,
-                                product_code=product.code,
-                                description=product.description,
-                                movement_date=in_date,
-                                movement_type="CARICO",
-                                quantity=float(in_quantity),
-                                destination="Magazzino",
-                                reference=in_supplier.strip(),
-                                unit_cost=float(in_unit_cost),
-                                notes=in_notes.strip()
-                            ))
+                                session.commit()
 
-                            session.commit()
-
-                            st.success(
-                                f"Carico registrato. "
-                                f"Nuova giacenza: {product.quantity:g}."
-                            )
-                            st.rerun()
+                                st.success(
+                                    f"Carico registrato. "
+                                    f"Nuova giacenza: {product.quantity:g}."
+                                )
+                                st.rerun()
 
             with st.expander("📜 Storico carichi"):
                 with InventorySession() as session:

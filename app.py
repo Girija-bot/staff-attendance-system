@@ -1642,6 +1642,12 @@ if page == "Pagamenti":
 
     if history_data:
 
+        st.metric(
+            "💶 Totale pagamenti personale",
+            f"€ {sum(float(p.amount) for p in payment_records):,.2f}"
+            .replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+
         history_df = pd.DataFrame(history_data)
 
         st.dataframe(
@@ -1660,9 +1666,137 @@ if page == "Pagamenti":
             )
         )
 
+        with st.expander("🗑️ Elimina un pagamento"):
+            st.warning(
+                "Il pagamento verrà eliminato definitivamente "
+                "dallo storico. Questa operazione non può "
+                "essere annullata."
+            )
+
+            payment_choices = {
+                f"{p.payment_date:%d/%m/%Y} — {p.staff_name} — "
+                f"€ {p.amount:.2f} (ID {p.id})": p.id
+                for p in payment_records
+            }
+
+            selected_payment_label = st.selectbox(
+                "Seleziona il pagamento da eliminare",
+                list(payment_choices.keys()),
+                key="delete_payment_choice"
+            )
+
+            confirm_payment_delete = st.checkbox(
+                "Confermo di voler eliminare questo pagamento",
+                key="confirm_payment_delete"
+            )
+
+            if st.button(
+                "Elimina pagamento",
+                disabled=not confirm_payment_delete,
+                key="delete_payment_button"
+            ):
+                with Session() as session:
+                    payment = session.get(
+                        Payment,
+                        payment_choices[selected_payment_label]
+                    )
+
+                    if payment:
+                        session.delete(payment)
+                        session.commit()
+
+                st.success("Pagamento eliminato.")
+                st.rerun()
+
     else:
 
         st.info("Nessun pagamento registrato.")
+
+    # ==================================================
+    # SUPPLIER EXPENSES STILL TO PAY (from Elenco delle spese)
+    # ==================================================
+
+    st.divider()
+
+    st.markdown("### 🧾 Spese da pagare (fornitori)")
+
+    st.caption(
+        "Spese marcate 'Non pagata' nella pagina Elenco delle spese."
+    )
+
+    try:
+
+        with engine.begin() as connection:
+
+            expense_rows = connection.execute(
+                text("""
+                    SELECT expense_date, description, supplier,
+                           amount, notes, payment_status
+                    FROM inventory_expenses
+                    ORDER BY expense_date DESC, id DESC
+                """)
+            ).mappings().all()
+
+        unpaid = []
+
+        for row in expense_rows:
+
+            status = row["payment_status"] or ""
+            note = (row["notes"] or "").lower()
+
+            if not status:
+                if "non pagata" in note or "da pagare" in note:
+                    status = "Non pagata"
+                elif "pagata" in note or "pagato" in note:
+                    status = "Pagata"
+
+            if status == "Non pagata":
+
+                unpaid.append({
+                    "Data": row["expense_date"].strftime("%d/%m/%Y"),
+                    "Descrizione": row["description"],
+                    "Fornitore": row["supplier"],
+                    "Importo (€)": round(float(row["amount"]), 2),
+                    "Note": row["notes"] or "",
+                })
+
+        if unpaid:
+
+            unpaid_df = pd.DataFrame(unpaid)
+
+            st.metric(
+                "Totale spese da pagare",
+                f"€ {unpaid_df['Importo (€)'].sum():,.2f}"
+                .replace(",", "X").replace(".", ",").replace("X", ".")
+            )
+
+            st.dataframe(
+                unpaid_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.divider()
+
+            staff_payments_total = sum(
+                float(p.amount) for p in payment_records
+            )
+
+            suppliers_total = float(unpaid_df["Importo (€)"].sum())
+
+            st.metric(
+                "💰 TOTALE (pagamenti personale + spese da pagare)",
+                f"€ {staff_payments_total + suppliers_total:,.2f}"
+                .replace(",", "X").replace(".", ",").replace("X", ".")
+            )
+
+        else:
+
+            st.info("Nessuna spesa da pagare.")
+
+    except Exception:
+
+        st.info("Elenco delle spese non disponibile.")
 
     st.stop()
 
