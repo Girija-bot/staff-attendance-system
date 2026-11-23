@@ -257,6 +257,12 @@ class Attendance(Base):
         nullable=True
     )
 
+    payment_method: Mapped[str] = mapped_column(
+        String(20),
+        default="",
+        nullable=False
+    )
+
     notes: Mapped[str] = mapped_column(
         String(500),
         default=""
@@ -589,6 +595,16 @@ with engine.begin() as connection:
             text(
                 "ALTER TABLE attendance "
                 "ADD COLUMN work_location VARCHAR(150)"
+            )
+        )
+
+    if "payment_method" not in attendance_columns:
+
+        connection.execute(
+            text(
+                "ALTER TABLE attendance "
+                "ADD COLUMN payment_method VARCHAR(20) "
+                "NOT NULL DEFAULT ''"
             )
         )
 
@@ -946,7 +962,8 @@ def save_attendance(
     start_time,
     end_time,
     notes,
-    work_location
+    work_location,
+    payment_method=""
 ):
 
     with Session() as session:
@@ -970,6 +987,7 @@ def save_attendance(
         item.end_time = end_time
         item.notes = notes.strip()
         item.work_location = work_location.strip() or None
+        item.payment_method = payment_method or ""
 
         session.commit()
 
@@ -993,6 +1011,7 @@ def attendance_frame(start_date, end_date, category=None):
                     a.end_time,
                     a.status,
                     a.work_location,
+                    a.payment_method,
                     a.notes
                 FROM attendance a
                 JOIN staff st ON st.id = a.staff_id
@@ -2474,6 +2493,25 @@ elif page == tr("record"):
             placeholder=tr("location_placeholder")
         )
 
+        PAYMENT_METHOD_OPTIONS = ["", "Bonifico", "Contanti"]
+
+        old_payment_method = (
+            old.payment_method
+            if old and old.payment_method in PAYMENT_METHOD_OPTIONS
+            else ""
+        )
+
+        payment_method_choice = st.selectbox(
+            "Metodo di pagamento / Payment method",
+            PAYMENT_METHOD_OPTIONS,
+            index=PAYMENT_METHOD_OPTIONS.index(old_payment_method),
+            help=(
+                "Vuoto = regola automatica (part-time contanti, "
+                "altri bonifico). Scegli Bonifico o Contanti per "
+                "sovrascrivere per questa persona/data."
+            )
+        )
+
         notes = st.text_input(
             tr("notes"),
             value=old.notes if old else "",
@@ -2492,7 +2530,8 @@ elif page == tr("record"):
                 start_time,
                 end_time,
                 notes,
-                work_location
+                work_location,
+                payment_method_choice
             )
 
             st.success(
@@ -2649,7 +2688,8 @@ elif page == tr("weekly"):
         st.caption(
             "Solo le presenze vengono conteggiate. Da pagare = giornate × "
             "paga giornaliera (impostata in Gestione del personale). "
-            "Part-time: contanti · tutti gli altri: bonifico."
+            "Part-time: contanti · tutti gli altri: bonifico "
+            "(modificabile per singola presenza in Registra presenze)."
             if language == "Italiano"
             else "Only attended records count. To pay = days × daily rate. "
                  "Part-time: cash · all others: bank transfer."
@@ -2661,6 +2701,27 @@ elif page == tr("weekly"):
                 "Called in - attended"
             ])
         ].copy()
+
+        if "payment_method" not in attended_df.columns:
+            attended_df["payment_method"] = ""
+
+        attended_df["payment_method"] = (
+            attended_df["payment_method"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        def effective_pm(row):
+            if row["payment_method"]:
+                return row["payment_method"]
+            if "part-time" in str(row["category"]).lower():
+                return "Contanti"
+            return "Bonifico"
+
+        attended_df["effective_pm"] = attended_df.apply(
+            effective_pm, axis=1
+        )
 
         if attended_df.empty:
 
@@ -2678,7 +2739,11 @@ elif page == tr("weekly"):
                     ["staff_id", "name", "category"],
                     as_index=False
                 )
-                .agg(days=("work_date", "nunique"), hours=("hours", "sum"))
+                .agg(
+                    days=("work_date", "nunique"),
+                    hours=("hours", "sum"),
+                    pm=("effective_pm", "first"),
+                )
             )
 
             person_hours["hours"] = person_hours["hours"].round(2)
@@ -2702,15 +2767,6 @@ elif page == tr("weekly"):
             person_hours["to_pay"] = (
                 person_hours["days"] * person_hours["daily_rate"]
             ).round(2)
-
-            def payment_method(cat):
-                if "part-time" in str(cat).lower():
-                    return "Contanti"
-                return "Bonifico"
-
-            person_hours["payment_method"] = (
-                person_hours["category"].apply(payment_method)
-            )
 
             person_hours["category"] = (
                 person_hours["category"].apply(category_label)
@@ -2756,15 +2812,11 @@ elif page == tr("weekly"):
             )
 
             cash_total = float(
-                shown.loc[
-                    shown["payment_method"] == "Contanti", "to_pay"
-                ].sum()
+                shown.loc[shown["pm"] == "Contanti", "to_pay"].sum()
             )
 
             bank_total = float(
-                shown.loc[
-                    shown["payment_method"] == "Bonifico", "to_pay"
-                ].sum()
+                shown.loc[shown["pm"] == "Bonifico", "to_pay"].sum()
             )
 
             pay_col1, pay_col2 = st.columns(2)
@@ -2786,7 +2838,7 @@ elif page == tr("weekly"):
                 "hours": tr("hours"),
                 "daily_rate": "Paga giornaliera (€)",
                 "to_pay": "Da pagare (€)",
-                "payment_method": "Metodo pagamento",
+                "pm": "Metodo pagamento",
             })[[
                 tr("name"),
                 tr("category"),
