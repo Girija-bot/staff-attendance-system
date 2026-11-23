@@ -480,6 +480,87 @@ def render_inventory():
             }
 
         if product_data:
+            # --------------------------------------------------
+            # QUICK CALCULATOR: how many are missing / extra
+            # --------------------------------------------------
+            st.subheader("🧮 Quante ne mancano?")
+            st.caption(
+                "Seleziona l'articolo e scrivi quante ne ti servono in "
+                "totale: ti dice quante mancano (o quante ne avanzi), "
+                "e puoi caricarle subito con un click."
+            )
+
+            calc_stock_lookup = {
+                p.id: float(p.quantity or 0) for p in products
+            }
+
+            calc_label = st.selectbox(
+                "Articolo",
+                list(product_choices.keys()),
+                key="diff_calc_product"
+            )
+
+            calc_product_id = product_choices[calc_label]
+
+            calc_stock = calc_stock_lookup[calc_product_id]
+
+            needed_total = st.number_input(
+                "Quante ne hai bisogno in totale?",
+                min_value=0.0,
+                value=0.0,
+                step=1.0
+            )
+
+            missing_qty = max(0.0, float(needed_total) - calc_stock)
+            extra_qty = max(0.0, calc_stock - float(needed_total))
+
+            d1, d2, d3 = st.columns(3)
+
+            d1.metric("In magazzino ora", f"{calc_stock:g}")
+            d2.metric("Ti mancano", f"{missing_qty:g}")
+            d3.metric("Ne avanzi", f"{extra_qty:g}")
+
+            if missing_qty > 0:
+                if st.button(
+                    f"➕ Carica subito le {missing_qty:g} mancanti",
+                    key="quick_load_missing"
+                ):
+                    with InventorySession() as session:
+                        product = session.get(Product, calc_product_id)
+
+                        if product:
+                            product.quantity = (
+                                float(product.quantity or 0) + missing_qty
+                            )
+
+                            session.add(StockMovement(
+                                product_id=product.id,
+                                product_code=product.code,
+                                description=product.description,
+                                movement_date=date.today(),
+                                movement_type="CARICO",
+                                quantity=missing_qty,
+                                destination="Magazzino",
+                                reference="Carico rapido (calcolatore)",
+                                unit_cost=float(product.unit_cost or 0),
+                                notes=(
+                                    f"Caricate {missing_qty:g} mancanti "
+                                    f"(servivano {float(needed_total):g}, "
+                                    f"giacenza {calc_stock:g})"
+                                )
+                            ))
+
+                            session.commit()
+
+                            st.success(
+                                f"Caricate {missing_qty:g} unità. "
+                                f"Nuova giacenza: {product.quantity:g}."
+                            )
+                            st.rerun()
+
+            st.divider()
+            st.subheader("Elenco articoli")
+
             st.dataframe(
                 pd.DataFrame(product_data).drop(columns=["ID"]),
                 use_container_width=True,
