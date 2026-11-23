@@ -520,6 +520,73 @@ def render_inventory():
             d2.metric("Ti mancano", f"{missing_qty:g}")
             d3.metric("Ne avanzi", f"{extra_qty:g}")
 
+            st.caption(
+                "Oppure modifica direttamente la giacenza: scrivi un numero "
+                "positivo per aggiungere (+10) o negativo per togliere (−10)."
+            )
+
+            adjust_qty = st.number_input(
+                "Aggiungi (+) o togli (−)",
+                value=0.0,
+                step=1.0,
+                key="diff_calc_adjust",
+                help="Es. 10 aggiunge 10 pezzi, -10 toglie 10 pezzi"
+            )
+
+            if adjust_qty != 0:
+
+                if adjust_qty > 0:
+                    adjust_button_label = f"➕ Aggiungi {adjust_qty:g}"
+                else:
+                    adjust_button_label = f"➖ Togli {abs(adjust_qty):g}"
+
+                if st.button(
+                    adjust_button_label,
+                    key="quick_adjust_stock"
+                ):
+                    with InventorySession() as session:
+                        product = session.get(Product, calc_product_id)
+
+                        if not product:
+                            st.error("Articolo non trovato.")
+                        else:
+                            current = float(product.quantity or 0)
+                            new_qty = current + float(adjust_qty)
+
+                            if new_qty < 0:
+                                st.error(
+                                    f"Non puoi togliere "
+                                    f"{abs(adjust_qty):g}: ne hai "
+                                    f"solo {current:g}."
+                                )
+                            else:
+                                product.quantity = new_qty
+
+                                session.add(StockMovement(
+                                    product_id=product.id,
+                                    product_code=product.code,
+                                    description=product.description,
+                                    movement_date=date.today(),
+                                    movement_type=(
+                                        "CARICO"
+                                        if adjust_qty > 0
+                                        else "SCARICO"
+                                    ),
+                                    quantity=abs(float(adjust_qty)),
+                                    destination="Magazzino",
+                                    reference="Modifica rapida (calcolatore)",
+                                    unit_cost=float(product.unit_cost or 0),
+                                    notes=f"Modifica manuale: {adjust_qty:+g}"
+                                ))
+
+                                session.commit()
+
+                                st.success(
+                                    f"Fatto. Nuova giacenza: "
+                                    f"{product.quantity:g}."
+                                )
+                                st.rerun()
+
             if missing_qty > 0:
                 if st.button(
                     f"➕ Carica subito le {missing_qty:g} mancanti",
@@ -561,11 +628,74 @@ def render_inventory():
             st.divider()
             st.subheader("Elenco articoli")
 
-            st.dataframe(
-                pd.DataFrame(product_data).drop(columns=["ID"]),
-                use_container_width=True,
-                hide_index=True
+            st.caption(
+                "Modifica i valori direttamente nella tabella "
+                "(click su una cella e scrivi), poi salva."
             )
+
+            edited_articles = st.data_editor(
+                pd.DataFrame(product_data),
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                column_config={
+                    "ID": None,
+                    "Codice": st.column_config.TextColumn(disabled=True),
+                },
+                key="articles_editor"
+            )
+
+            if st.button(
+                "💾 Salva modifiche tabella",
+                key="save_articles_table"
+            ):
+                with InventorySession() as session:
+                    for _, row in edited_articles.iterrows():
+                        product = session.get(
+                            Product, int(row["ID"])
+                        )
+
+                        if not product:
+                            continue
+
+                        old_qty = float(product.quantity or 0)
+                        new_qty = float(row["Giacenza"])
+                        delta = new_qty - old_qty
+
+                        product.description = (
+                            str(row["Descrizione"]).strip()
+                        )
+                        product.quantity = new_qty
+                        product.location = str(row["Ubicazione"])
+                        product.supplier = str(row["Fornitore"])
+                        product.unit_cost = float(
+                            row["Ultimo costo unitario (€)"]
+                        )
+
+                        if abs(delta) > 0:
+                            session.add(StockMovement(
+                                product_id=product.id,
+                                product_code=product.code,
+                                description=product.description,
+                                movement_date=date.today(),
+                                movement_type=(
+                                    "CARICO"
+                                    if delta > 0
+                                    else "SCARICO"
+                                ),
+                                quantity=abs(delta),
+                                destination="Magazzino",
+                                reference="Modifica diretta tabella",
+                                unit_cost=float(product.unit_cost or 0),
+                                notes=(
+                                    f"Modifica dalla tabella: {delta:+g}"
+                                )
+                            ))
+
+                    session.commit()
+
+                st.success("Modifiche della tabella salvate.")
+                st.rerun()
 
             selected_product_label = st.selectbox(
                 "Seleziona un articolo da modificare o eliminare",
