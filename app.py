@@ -2647,13 +2647,12 @@ elif page == tr("weekly"):
         )
 
         st.caption(
-            "Solo le presenze (Presente / Chiamato - presente) vengono "
-            "conteggiate. Il totale da pagare = giornate lavorate × paga "
-            "giornaliera (impostata in Gestione del personale)."
+            "Solo le presenze vengono conteggiate. Da pagare = giornate × "
+            "paga giornaliera (impostata in Gestione del personale). "
+            "Part-time: contanti · tutti gli altri: bonifico."
             if language == "Italiano"
-            else "Only attended records (Present / Called in - attended) "
-                 "count. Total to pay = worked days × daily rate "
-                 "(set in Staff management)."
+            else "Only attended records count. To pay = days × daily rate. "
+                 "Part-time: cash · all others: bank transfer."
         )
 
         attended_df = df[
@@ -2704,6 +2703,15 @@ elif page == tr("weekly"):
                 person_hours["days"] * person_hours["daily_rate"]
             ).round(2)
 
+            def payment_method(cat):
+                if "part-time" in str(cat).lower():
+                    return "Contanti"
+                return "Bonifico"
+
+            person_hours["payment_method"] = (
+                person_hours["category"].apply(payment_method)
+            )
+
             person_hours["category"] = (
                 person_hours["category"].apply(category_label)
             )
@@ -2747,6 +2755,30 @@ elif page == tr("weekly"):
                 f"{shown['to_pay'].sum():.2f}"
             )
 
+            cash_total = float(
+                shown.loc[
+                    shown["payment_method"] == "Contanti", "to_pay"
+                ].sum()
+            )
+
+            bank_total = float(
+                shown.loc[
+                    shown["payment_method"] == "Bonifico", "to_pay"
+                ].sum()
+            )
+
+            pay_col1, pay_col2 = st.columns(2)
+
+            pay_col1.metric(
+                "💵 Contanti (part-time)",
+                f"{cash_total:.2f}"
+            )
+
+            pay_col2.metric(
+                "🏦 Bonifico (full-time)",
+                f"{bank_total:.2f}"
+            )
+
             display_hours = shown.rename(columns={
                 "name": tr("name"),
                 "category": tr("category"),
@@ -2754,6 +2786,7 @@ elif page == tr("weekly"):
                 "hours": tr("hours"),
                 "daily_rate": "Paga giornaliera (€)",
                 "to_pay": "Da pagare (€)",
+                "payment_method": "Metodo pagamento",
             })[[
                 tr("name"),
                 tr("category"),
@@ -2761,6 +2794,7 @@ elif page == tr("weekly"):
                 tr("hours"),
                 "Paga giornaliera (€)",
                 "Da pagare (€)",
+                "Metodo pagamento",
             ]]
 
             st.dataframe(
